@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import re
 import time
@@ -13,6 +14,55 @@ from .draft_observation import Observation, inspect_screen
 
 WAIT_SECONDS = 180.0
 
+# Local patch (ccb-team-kit): unattended agents. CCB_DRAFT_GUARD_UNATTENDED=1 is for panes no
+# human types into (a team of agents). There a "nonempty" composer is a misread, not someone's
+# draft, and the attended path (wait 180 s, then Ctrl-C, then wait forever for "empty") hung
+# deliveries for 15-36 min; an "unknown" reading also reset that wait on every poll, so it never
+# ended. Unattended: a nonempty reading is sent after a short confirmation, without Ctrl-C; a
+# "busy" status row that has not changed for STALE_BUSY_SECONDS is not a turn in progress; every
+# other unknown keeps waiting (a menu or dialog may own the keys) but the wait accumulates and is
+# marked draft_guard_stuck:<reason> after STUCK_MARK_SECONDS, for a supervisor to see.
+UNATTENDED_GRACE_SECONDS = 30.0
+STALE_BUSY_SECONDS = 300.0
+STUCK_MARK_SECONDS = 300.0
+_BUSY_ROW = re.compile(r'^[✢✳✶✻✽·]\s+.*(?:…|\.\.\.)')
+_ANSI_ANY = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+
+def _unattended_env() -> bool:
+    return os.environ.get('CCB_DRAFT_GUARD_UNATTENDED', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+_LAST_RECORD: dict = {}
+
+
+def record_observation(target, observation: Observation) -> None:
+    """Local patch: log every non-empty composer reading (rate-limited per pane and reading) with
+    the bottom of the screen and the cursor, so a hang can be diagnosed afterwards. Never raises."""
+    try:
+        screen = getattr(target, '_screen', None)
+        if observation.state == 'empty' or not screen:  # only real pane readings
+            return
+        key = (observation.binding, observation.state, observation.reason)
+        now = time.time()
+        if now - _LAST_RECORD.get(key, 0.0) < 60.0:
+            return
+        _LAST_RECORD[key] = now
+        lines = _ANSI_ANY.sub('', str(screen.get('text') or '')).split('\n')
+        path = Path(os.environ.get('CCB_DRAFT_GUARD_LOG') or Path.home() / '.cache' / 'ccb' / 'draft-guard.jsonl')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 5 * 1024 * 1024:
+            path.replace(path.with_suffix('.jsonl.1'))
+        rec = {'time': time.strftime('%Y-%m-%dT%H:%M:%S'), 'provider': getattr(target, 'provider', ''),
+               'pane': getattr(target, 'pane_id', ''), 'binding': observation.binding,
+               'state': observation.state, 'reason': observation.reason,
+               'cursor': [screen.get('cursor_x'), screen.get('cursor_y')], 'rows': len(lines),
+               'bottom': lines[-14:]}
+        with path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
 
 @dataclass
 class DraftGuard:
@@ -21,13 +71,20 @@ class DraftGuard:
     since: float | None = None
     clear_attempted: bool = False
     reason: str = 'unobserved'
+    unattended: bool = field(default_factory=_unattended_env)
+    blocked_since: float | None = None
+    busy_row: str = ''
+    busy_since: float | None = None
 
     def reset(self, reason: str) -> None:
         self.since = None
         self.reason = reason
 
     def allows(self, target: 'DraftTarget') -> bool:
+        if self.unattended:
+            return self._allows_unattended(target)
         observation = target.observe()
+        record_observation(target, observation)
         if observation.state not in {'empty', 'nonempty'}:
             self.reset(observation.reason)
             return False
@@ -73,6 +130,67 @@ class DraftGuard:
         self.reason = 'clear_unconfirmed'
         return False
 
+    def _allows_unattended(self, target) -> bool:
+        observation = target.observe()
+        record_observation(target, observation)
+        now = self.clock()
+        if self.binding != observation.binding:
+            self.binding = observation.binding
+            self.blocked_since = self.busy_since = None
+            self.busy_row = ''
+        if observation.state == 'empty':
+            self.blocked_since = self.busy_since = None
+            self.busy_row = ''
+            self.reason = observation.reason
+            return True
+        if observation.state == 'unknown' and observation.reason == 'provider_busy':
+            row = _busy_row(target)
+            if row != self.busy_row:
+                self.busy_row, self.busy_since = row, now
+            if self.busy_since is not None and now - self.busy_since >= STALE_BUSY_SECONDS:
+                # the status row has not moved: an old row left on screen, not a turn in progress
+                second = _inspect_without_busy_rows(target, observation.binding)
+                if second is not None and second.state in {'empty', 'nonempty'}:
+                    observation = second
+            if observation.reason == 'provider_busy':
+                self.blocked_since = None
+                self.reason = 'provider_busy'
+                return False
+        if self.blocked_since is None:
+            self.blocked_since = now
+        waited = now - self.blocked_since
+        if observation.state == 'empty':
+            self.blocked_since = None
+            self.reason = observation.reason
+            return True
+        if observation.state == 'nonempty':
+            if waited >= UNATTENDED_GRACE_SECONDS:
+                self.blocked_since = None
+                self.reason = f'unattended_send:{observation.reason}'
+                return True
+            self.reason = 'unattended_confirming'
+            return False
+        self.reason = (f'draft_guard_stuck:{observation.reason}' if waited >= STUCK_MARK_SECONDS
+                       else observation.reason)
+        return False
+
+
+def _busy_row(target) -> str:
+    screen = getattr(target, '_screen', None) or {}
+    lines = _ANSI_ANY.sub('', str(screen.get('text') or '')).split('\n')
+    rows = [line for line in lines if _BUSY_ROW.match(line)]
+    return rows[-1] if rows else ''
+
+
+def _inspect_without_busy_rows(target, binding: str) -> Observation | None:
+    screen = getattr(target, '_screen', None)
+    provider = getattr(target, 'provider', '')
+    if not screen or not provider:
+        return None
+    text = '\n'.join('' if _BUSY_ROW.match(_ANSI_ANY.sub('', line)) else line
+                     for line in str(screen['text']).split('\n'))
+    return inspect_screen(provider, dict(screen, text=text), binding=binding)
+
 
 @dataclass
 class DraftTarget:
@@ -88,6 +206,7 @@ class DraftTarget:
     def observe(self) -> Observation:
         try:
             screen = self.backend.capture_composer(self.pane_id)
+            self._screen = screen  # local patch: kept for diagnostics and the unattended guard
             binding = f'{self.generation}:{screen["binding"]}'
             if screen.get('blocked'):
                 return Observation('unknown', binding, 'pane_unavailable_or_in_mode')
