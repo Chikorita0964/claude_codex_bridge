@@ -131,3 +131,10 @@ def test_readings_are_recorded_for_diagnosis(log_to_tmp):
     rec = json.loads(log_to_tmp.read_text().splitlines()[0])
     assert rec['state'] == 'unknown' and rec['reason'] == 'provider_busy'
     assert rec['cursor'] == [2, 3] and '❯ ' in rec['bottom']
+
+
+def test_the_unattended_flag_reaches_ccbd():
+    # ccbd gets an allowlisted env; a flag it drops would leave the patch switched off.
+    from runtime_env.control_plane import control_plane_env
+    env = control_plane_env(environ={'CCB_DRAFT_GUARD_UNATTENDED': '1', 'PATH': '/usr/bin'})
+    assert env.get('CCB_DRAFT_GUARD_UNATTENDED') == '1'

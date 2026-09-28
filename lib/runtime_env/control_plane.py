@@ -21,6 +21,8 @@ _CONTROL_PLANE_ALLOWLIST = {
     'CCB_CLAUDE_NO_TERMINAL_TIMEOUT_S',
     'CCB_CODEX_NO_TERMINAL_TIMEOUT_S',
     'CCB_DEBUG',
+    # Local patch (ccb-team-kit): the draft guard reads this in ccbd, so it has to get there.
+    'CCB_DRAFT_GUARD_UNATTENDED',
     'CCB_GEMINI_NO_TERMINAL_TIMEOUT_S',
     'CCB_HERDR_CAPABILITY_REPORT',
     'CCB_HERDR_EXE',

@@ -105,6 +105,7 @@ def _install_provider_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
         "CCB_CALLER_PROJECT_ID",
         "CCB_CALLER_PROJECT_ROOT",
         "CCB_CALLER_RUNTIME_DIR",
+        "CCB_DRAFT_GUARD_UNATTENDED",  # local patch: set in the shell that runs the team
         "CCB_SESSION_FILE",
         "CCB_SESSION_ID",
         "CLAUDE_CONFIG_DIR",
