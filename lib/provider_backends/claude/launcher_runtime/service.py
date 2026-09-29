@@ -250,7 +250,9 @@ def _persistable_start_cmd(start_cmd: str, *, settings_path: Path) -> str:
     replace_settings_value = False
     for token in tokens:
         if replace_settings_value:
-            filtered.append(str(settings_path))
+            # Only CCB's own inline settings JSON is swapped for the runtime file; a settings file
+            # the agent's startup_args name (for example a team's hooks) must survive a restore.
+            filtered.append(str(settings_path) if token.lstrip().startswith('{') else token)
             replace_settings_value = False
             continue
         if token == '--settings':

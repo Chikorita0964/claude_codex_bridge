@@ -116,6 +116,21 @@ def test_persistable_start_cmd_strips_auth_but_keeps_proxy_base_url(tmp_path: Pa
     assert 'claude --continue' in persisted
 
 
+def test_persistable_start_cmd_keeps_startup_args_settings_file(tmp_path: Path) -> None:
+    settings_path = tmp_path / 'claude-settings.json'
+    team_settings = tmp_path / 'team' / 'agent-settings.json'
+    start_cmd = (
+        'claude --settings \'{"skipDangerousModePermissionPrompt": true}\' '
+        f'--model ccb-worker1 --settings {team_settings}'
+    )
+
+    persisted = _persistable_start_cmd(start_cmd, settings_path=settings_path)
+
+    assert f'--settings {settings_path}' in persisted
+    assert f'--settings {team_settings}' in persisted
+    assert 'skipDangerousModePermissionPrompt' not in persisted
+
+
 def test_rehydrate_claude_persisted_start_cmd_restores_proxy_auth_token() -> None:
     persisted = (
         'export ANTHROPIC_BASE_URL=https://proxy.example.test HOME=/tmp/home; '
