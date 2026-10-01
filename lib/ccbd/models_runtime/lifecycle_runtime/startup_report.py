@@ -35,6 +35,8 @@ class CcbdStartupReport:
     timings_ms: dict[str, float] | None = None
     operation_counts: dict[str, int] | None = None
     readiness_timeline: dict[str, Any] | None = None
+    start_policy_present: bool = False
+    start_policy_auto_permission: bool | None = None
     api_version: int = API_VERSION
 
     def __post_init__(self) -> None:
@@ -71,6 +73,8 @@ class CcbdStartupReport:
             'timings_ms': dict(self.timings_ms or {}),
             'operation_counts': _clean_operation_counts(self.operation_counts),
             'readiness_timeline': dict(self.readiness_timeline or {}),
+            'start_policy_present': self.start_policy_present,
+            'start_policy_auto_permission': self.start_policy_auto_permission,
         }
 
     def summary_fields(self) -> dict[str, Any]:
@@ -140,6 +144,12 @@ class CcbdStartupReport:
                 dict(record.get('readiness_timeline') or {})
                 if isinstance(record.get('readiness_timeline'), dict)
                 else {}
+            ),
+            start_policy_present=bool(record.get('start_policy_present')),
+            start_policy_auto_permission=(
+                bool(record['start_policy_auto_permission'])
+                if record.get('start_policy_auto_permission') is not None
+                else None
             ),
             api_version=int(record.get('api_version', API_VERSION)),
         )

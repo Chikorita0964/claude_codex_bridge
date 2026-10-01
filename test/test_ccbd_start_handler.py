@@ -114,6 +114,37 @@ def test_start_handler_generates_unique_correlation_ids_for_concurrent_legacy_ca
     assert request_ids == response_ids
 
 
+def test_start_handler_persists_policy_before_interrupted_start_flow() -> None:
+    order: list[str] = []
+    policies: list[dict[str, object]] = []
+
+    def failing_start(**kwargs):
+        order.append('start')
+        raise RuntimeError('start flow interrupted')
+
+    def persist_policy(**kwargs):
+        order.append('persist')
+        policies.append(kwargs)
+
+    app = SimpleNamespace(
+        start_maintenance_lock=threading.Lock(),
+        runtime_supervisor=SimpleNamespace(start=failing_start),
+        persist_start_policy=persist_policy,
+    )
+
+    with pytest.raises(RuntimeError, match='start flow interrupted'):
+        _build_start_handler()(app)({'agent_names': ['demo'], 'restore': False, 'auto_permission': True})
+
+    assert order == ['persist', 'start']
+    assert policies == [
+        {
+            'auto_permission': True,
+            'recovery_restore': False,
+            'source': 'start_command',
+        }
+    ]
+
+
 def test_start_handler_preserves_explicit_safe_auto_permission_false() -> None:
     start_calls: list[dict[str, object]] = []
     policies: list[dict[str, object]] = []

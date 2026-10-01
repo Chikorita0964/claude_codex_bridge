@@ -2475,6 +2475,13 @@ def test_ccbd_start_rolls_back_mount_when_restore_fails(tmp_path: Path, monkeypa
     assert lifecycle.last_failure_reason == 'boom'
     assert not app.paths.ccbd_socket_path.exists()
 
+    startup_report = app.startup_report_store.load()
+    assert startup_report is not None
+    assert startup_report.status == 'failed'
+    assert startup_report.auto_permission is False
+    assert startup_report.start_policy_present is False
+    assert startup_report.start_policy_auto_permission is None
+
 
 def test_ccbd_start_daemon_boot_adopts_existing_runtime_authority(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-ccbd-daemon-boot-adopt'
@@ -2482,6 +2489,7 @@ def test_ccbd_start_daemon_boot_adopts_existing_runtime_authority(tmp_path: Path
     (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
     bootstrap_project(project_root)
     app = CcbdApp(project_root)
+    app.persist_start_policy(auto_permission=True, recovery_restore=True)
     runtime_root = app.paths.agent_provider_runtime_dir('demo', 'codex')
     runtime_root.mkdir(parents=True, exist_ok=True)
     (runtime_root / 'bridge.pid').write_text('5511\n', encoding='utf-8')
@@ -2550,6 +2558,15 @@ def test_ccbd_start_daemon_boot_adopts_existing_runtime_authority(tmp_path: Path
 
     assert server_thread.is_alive() is False
     assert thread_errors == []
+
+    startup_report = app.startup_report_store.load()
+    assert startup_report is not None
+    assert startup_report.trigger == 'daemon_boot'
+    assert startup_report.status == 'ok'
+    assert startup_report.restore_requested is True
+    assert startup_report.auto_permission is True
+    assert startup_report.start_policy_present is True
+    assert startup_report.start_policy_auto_permission is True
 
 
 def test_ccbd_probe_failure_does_not_adopt_unmounted_runtime_generation(

@@ -13,6 +13,7 @@ from ccbd.reload_drain_auto_retry import tick_reload_drain_auto_retry
 from ccbd.services.dispatcher_runtime.frontdesk_direct_handoff import recover_frontdesk_direct_handoffs
 from ccbd.services.dispatcher_runtime.detailer_replan_handoff import recover_detailer_replan_handoffs
 from ccbd.services.lifecycle import build_lifecycle, current_socket_inode
+from ccbd.services.start_policy import recovery_start_options
 from ccbd.startup_fence import StartupFenceError, validate_expected_startup_lifecycle
 from ccbd.startup_policy import CONTROL_PLANE_RPC_TIMEOUT_S
 from ccbd.stop_flow import build_shutdown_runtime_snapshots
@@ -570,6 +571,11 @@ def record_startup_report(
             inspection = app.ownership_guard.inspect(
                 assume_mounted_socket_connectable=(str(status) == 'ok')
             )
+            # Daemon boot has no start RPC payload; the persisted start policy
+            # is the authority this boot recovers with, so the report states it
+            # instead of a constant that hides a missing policy.
+            start_policy = _load_start_policy(app)
+            restore_requested, auto_permission = recovery_start_options(start_policy)
             report = CcbdStartupReport(
                 project_id=app.project_id,
                 generated_at=app.clock(),
@@ -577,8 +583,12 @@ def record_startup_report(
                 status=status,
                 requested_agents=(),
                 desired_agents=tuple(sorted(app.config.agents)),
-                restore_requested=False,
-                auto_permission=False,
+                restore_requested=restore_requested,
+                auto_permission=auto_permission,
+                start_policy_present=start_policy is not None,
+                start_policy_auto_permission=(
+                    bool(start_policy.auto_permission) if start_policy is not None else None
+                ),
                 daemon_generation=app.lease.generation if app.lease is not None else inspection.generation,
                 daemon_started=True,
                 config_signature=str(app.config_identity.get('config_signature') or '').strip() or None,
@@ -598,6 +608,13 @@ def record_startup_report(
             app.startup_report_store.save(report)
     except Exception:
         return
+
+
+def _load_start_policy(app):
+    try:
+        return app.start_policy_store.load()
+    except Exception:
+        return None
 
 
 def _startup_report_write_allowed(app, expected_fence, *, status: str) -> bool:

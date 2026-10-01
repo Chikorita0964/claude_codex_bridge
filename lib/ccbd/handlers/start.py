@@ -31,6 +31,14 @@ def build_start_handler(app):
                 now_ns=rpc_accepted_ns,
             )
         with app.start_maintenance_lock:
+            # Persist before the start flow: if the start is interrupted or
+            # fails, the requested authority still survives as the recovery
+            # policy instead of leaving the previous policy (or none) in place.
+            app.persist_start_policy(
+                auto_permission=auto_permission,
+                recovery_restore=restore,
+                source='start_command',
+            )
             summary = app.runtime_supervisor.start(
                 agent_names=requested,
                 restore=restore,
@@ -39,11 +47,6 @@ def build_start_handler(app):
                 startup_run_id=startup_run_id,
                 daemon_started=daemon_started,
                 readiness_recorder=readiness_recorder,
-            )
-            app.persist_start_policy(
-                auto_permission=auto_permission,
-                recovery_restore=restore,
-                source='start_command',
             )
         response = summary.to_record()
         response['startup_run_id'] = startup_run_id
