@@ -171,3 +171,32 @@ def test_ensure_project_namespace_passes_fast_probe_timeout_to_reflow_for_backgr
             'session_probe_timeout_s': 0.0,
         }
     ]
+
+
+def test_ensure_project_namespace_reflows_instead_of_recreating_with_topology_plan() -> None:
+    ensure_calls: list[dict[str, object]] = []
+    reflow_calls: list[dict[str, object]] = []
+
+    class _Namespace:
+        def ensure(self, **kwargs):
+            ensure_calls.append(kwargs)
+            return 'ensure'
+
+        def reflow_workspace(self, *, layout_signature=None, reason=None):
+            reflow_calls.append({'layout_signature': layout_signature, 'reason': reason})
+            return 'reflow'
+
+    result = ensure_project_namespace(
+        _Namespace(),
+        layout_signature='explicit-windows',
+        topology_plan=object(),
+        recreate_namespace=False,
+        reflow_workspace=True,
+        recreate_reason='pane_recovery:radviser1',
+    )
+
+    assert result == 'reflow'
+    assert reflow_calls == [
+        {'layout_signature': 'explicit-windows', 'reason': 'pane_recovery:radviser1'}
+    ]
+    assert ensure_calls == []

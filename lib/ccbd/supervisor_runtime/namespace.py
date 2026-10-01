@@ -14,15 +14,16 @@ def ensure_project_namespace(
     background_maintenance: bool = False,
     terminal_size: tuple[int, int] | None = None,
 ):
-    if reflow_workspace and topology_plan is None:
+    # A reflow request (pane recovery) must stay a workspace reflow: a topology
+    # plan alone must never escalate it into killing and rebuilding the whole
+    # namespace, which would re-assign every pane id.
+    if reflow_workspace:
         return _reflow_project_workspace(
             project_namespace,
             layout_signature=layout_signature,
             recreate_reason=recreate_reason,
             background_maintenance=background_maintenance,
         )
-    if reflow_workspace and topology_plan is not None:
-        recreate_namespace = True
     ensure_fn = project_namespace.ensure
     if not _namespace_kwargs_requested(
         layout_signature=layout_signature,
