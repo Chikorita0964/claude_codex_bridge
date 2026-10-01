@@ -41,6 +41,7 @@ def ensure_agent_runtime(
     style_index: int = 0,
     tmux_socket_path: str | None = None,
     namespace_backend_impl: str | None = None,
+    expected_pane_identity: dict[str, object] | None = None,
 ):
     launcher = _pane_backed_launcher(spec)
     if launcher is None:
@@ -89,6 +90,8 @@ def ensure_agent_runtime(
             launch_kwargs['namespace_ref'] = namespace_ref
         if namespace_backend_impl is not None:
             launch_kwargs['namespace_backend_impl'] = namespace_backend_impl
+        if expected_pane_identity is not None:
+            launch_kwargs['expected_pane_identity'] = expected_pane_identity
         launch_timings = launch_runtime_fn(
             context,
             command,

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 import time
 from pathlib import Path
 
+from ccbd.services.project_namespace_pane import inspect_project_namespace_pane
 from terminal_runtime.env import tmux_history_limit
 from terminal_runtime.placeholders import pane_placeholder_argv
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import is_tmux_query_unknown
 
 _TMUX_ENVIRONMENT_KEYS = (
     'TERM',
@@ -57,9 +60,16 @@ def launch_pane(
     pane_meets_minimum_size_fn,
     best_effort_kill_tmux_pane_fn,
     allow_detached_fallback: bool,
+    expected_pane_identity: Mapping[str, object] | None = None,
 ) -> str:
     if assigned_pane_id:
         pane_id = str(assigned_pane_id)
+        require_assigned_pane_identity(
+            backend,
+            pane_id,
+            spec_name=spec_name,
+            expected_pane_identity=expected_pane_identity,
+        )
         backend.respawn_pane(
             pane_id,
             cmd=start_cmd,
@@ -81,6 +91,90 @@ def launch_pane(
         best_effort_kill_tmux_pane_fn=best_effort_kill_tmux_pane_fn,
         allow_detached_fallback=allow_detached_fallback,
     )
+
+
+def require_assigned_pane_identity(
+    backend,
+    pane_id: str,
+    *,
+    spec_name: str,
+    expected_pane_identity: Mapping[str, object] | None,
+) -> None:
+    """Refuse to respawn into an assigned pane that is no longer the agent's own.
+
+    The start flow hands the launcher a pane id captured when the namespace was
+    materialized.  When the namespace is rebuilt in between, tmux re-numbers its
+    panes and that id can now belong to another agent on another window; the
+    blind respawn would kill that agent's process.  Before respawning, the pane's
+    own ``@ccb_slot``/``@ccb_window``/``@ccb_namespace_epoch`` are compared with
+    the identity the caller expects.  Nothing is checked when the caller does not
+    state an expectation (legacy layouts without namespace identity), and a pane
+    that does not answer the probe is refused rather than assumed owned.
+    """
+    expectations = _expected_pane_identity(expected_pane_identity, spec_name=spec_name)
+    if expectations is None:
+        return
+    slot, window, epoch = expectations
+    record = inspect_project_namespace_pane(backend, pane_id)
+    if is_tmux_query_unknown(record):
+        raise RuntimeError(
+            f'assigned tmux pane {pane_id} for {spec_name!r} did not answer an identity '
+            'probe; refusing to respawn into a pane whose ownership is unknown'
+        )
+    if record is None:
+        raise RuntimeError(
+            f'assigned tmux pane {pane_id} for {spec_name!r} is gone; refusing to respawn'
+        )
+    mismatch = _pane_identity_mismatch(record, slot=slot, window=window, epoch=epoch)
+    if mismatch is not None:
+        raise RuntimeError(
+            f'assigned tmux pane {pane_id} for {spec_name!r} no longer belongs to it '
+            f'({mismatch}); refusing to respawn into a foreign pane'
+        )
+
+
+def _expected_pane_identity(
+    expected_pane_identity: Mapping[str, object] | None,
+    *,
+    spec_name: str,
+) -> tuple[str | None, str | None, int | None] | None:
+    if not expected_pane_identity:
+        return None
+    slot = _clean_text(expected_pane_identity.get('slot')) or _clean_text(spec_name)
+    window = _clean_text(expected_pane_identity.get('window'))
+    epoch = _optional_int(expected_pane_identity.get('epoch'))
+    if slot is None and window is None and epoch is None:
+        return None
+    return slot, window, epoch
+
+
+def _pane_identity_mismatch(record, *, slot: str | None, window: str | None, epoch: int | None) -> str | None:
+    actual_slot = _clean_text(getattr(record, 'slot_key', None))
+    if slot is not None and actual_slot != slot:
+        return f'slot={actual_slot or "<missing>"} expected {slot}'
+    actual_window = _clean_text(getattr(record, 'ccb_window', None)) or _clean_text(
+        getattr(record, 'window_name', None)
+    )
+    if window is not None and actual_window != window:
+        return f'window={actual_window or "<missing>"} expected {window}'
+    actual_epoch = getattr(record, 'namespace_epoch', None)
+    if epoch is not None and actual_epoch != epoch:
+        return f'namespace_epoch={actual_epoch} expected {epoch}'
+    return None
+
+
+def _clean_text(value: object) -> str | None:
+    text = str(value or '').strip()
+    return text or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == '':
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def allocate_fresh_pane(
@@ -275,4 +369,5 @@ __all__ = [
     'launch_pane',
     'pane_meets_minimum_size',
     'prepare_detached_tmux_server',
+    'require_assigned_pane_identity',
 ]

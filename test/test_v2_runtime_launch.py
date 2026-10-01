@@ -1690,6 +1690,53 @@ def test_ensure_agent_runtime_uses_assigned_tmux_pane(monkeypatch, tmp_path: Pat
     assert ('%43', visual.border_style, visual.active_border_style) in tmux_state['styles']
 
 
+def test_ensure_agent_runtime_refuses_assigned_pane_that_became_foreign(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-foreign'
+    (project_root / '.ccb').mkdir(parents=True)
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False))
+    spec = _spec('agent1')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    plan.workspace_path.mkdir(parents=True, exist_ok=True)
+
+    tmux_state: dict[str, object] = {'respawn': None}
+
+    class FakeTmuxBackend:
+        def respawn_pane(self, pane_id: str, *, cmd: str, cwd: str | None = None, remain_on_exit: bool = True) -> None:
+            del cmd, remain_on_exit
+            tmux_state['respawn'] = (pane_id, cwd)
+
+        def _tmux_run(self, args, **kwargs):
+            del kwargs
+            stdout = ''
+            if tuple(args[:1]) == ('display-message',):
+                # %43 now carries worker2's identity on pair2 at epoch 9, not agent1's.
+                fields = (
+                    '%43', 'ccb-session', '@2', 'pair2', '0', 'agent', 'worker2', 'pair2',
+                    '', '', ctx.project.project_id, 'ccbd', '9', '', 'worker2',
+                    '', '', '', '', '', '',
+                )
+                stdout = '\t'.join(fields) + '\n'
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('cli.services.runtime_launch._inside_tmux', lambda: True)
+    monkeypatch.setattr('cli.services.runtime_launch.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
+
+    with pytest.raises(RuntimeError, match='no longer belongs to it'):
+        ensure_agent_runtime(
+            ctx,
+            ctx.command,
+            spec,
+            plan,
+            None,
+            assigned_pane_id='%43',
+            style_index=2,
+            expected_pane_identity={'slot': 'agent1', 'window': 'pair1', 'epoch': 7},
+        )
+
+    assert tmux_state['respawn'] is None
+
+
 def test_ensure_agent_runtime_launches_named_droid_session(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-droid'
     (project_root / '.ccb').mkdir(parents=True)

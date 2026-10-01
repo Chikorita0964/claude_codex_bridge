@@ -70,6 +70,7 @@ def ensure_agent_runtime(
     namespace_backend_impl: str | None = None,
     provider_prepared: bool = False,
     effective_command: ParsedStartCommand | None = None,
+    expected_pane_identity: dict[str, object] | None = None,
 ) -> RuntimeLaunchResult:
     launcher = _runtime_launcher(spec.provider)
     runtime_dir = context.paths.agent_provider_runtime_dir(spec.name, spec.provider)
@@ -115,6 +116,7 @@ def ensure_agent_runtime(
         style_index=style_index,
         tmux_socket_path=tmux_socket_path,
         namespace_backend_impl=namespace_backend_impl,
+        expected_pane_identity=expected_pane_identity,
     )
 
 
@@ -139,6 +141,7 @@ def _launch_runtime(
     style_index: int = 0,
     tmux_socket_path: str | None = None,
     namespace_backend_impl: str | None = None,
+    expected_pane_identity: dict[str, object] | None = None,
 ) -> dict[str, float]:
     return _launch_runtime_impl(
         context,
@@ -163,6 +166,7 @@ def _launch_runtime(
         tmux_socket_path=tmux_socket_path,
         namespace_backend_impl=namespace_backend_impl,
         allow_detached_fallback=tmux_socket_path is None,
+        expected_pane_identity=expected_pane_identity,
     )
 
 

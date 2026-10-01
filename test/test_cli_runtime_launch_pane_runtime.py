@@ -120,3 +120,33 @@ def test_launch_runtime_pane_non_herdr_falls_through_to_launch_pane(monkeypatch)
     )
     assert launched == {'spec_name': 'agent_1', 'start_cmd': 'export A=1 && codex', 'run_cwd': Path(r'D:\proj')}
     assert pane['pane_id'] == 't:p1'
+
+
+def test_launch_runtime_pane_forwards_expected_identity_to_launch_pane(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def launch_pane(backend, *, spec_name, assigned_pane_id, start_cmd, run_cwd, **kwargs):
+        del backend, spec_name, start_cmd, run_cwd
+        captured['assigned_pane_id'] = assigned_pane_id
+        captured['expected_pane_identity'] = kwargs.get('expected_pane_identity')
+        return assigned_pane_id
+
+    monkeypatch.setattr(pane_runtime, 'launch_pane', launch_pane)
+    identity = {'slot': 'agent_1', 'window': 'pair1', 'epoch': 7}
+
+    pane = pane_runtime.launch_runtime_pane(
+        object(),
+        spec_name='agent_1',
+        assigned_pane_id='%7',
+        assigned_pane_ref=None,  # 非 herdr ref
+        start_cmd='export A=1 && codex',
+        run_cwd=Path(r'D:\proj'),
+        create_detached_tmux_pane_fn=lambda *a, **k: None,
+        pane_meets_minimum_size_fn=lambda *a, **k: True,
+        best_effort_kill_tmux_pane_fn=lambda *a, **k: None,
+        allow_detached_fallback=False,
+        expected_pane_identity=identity,
+    )
+
+    assert captured == {'assigned_pane_id': '%7', 'expected_pane_identity': identity}
+    assert pane == '%7'

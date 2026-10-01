@@ -518,6 +518,82 @@ def test_start_agent_runtime_relaunches_and_tracks_project_socket_pane() -> None
     assert execution.agent_result.binding_reject_reason == 'namespace_epoch_mismatch'
 
 
+def test_start_agent_runtime_tells_the_launcher_which_pane_identity_to_verify() -> None:
+    runtime_service = _RuntimeService()
+    launched_binding = _binding(runtime_ref='tmux:%7', session_ref='session-7', pane_id='%7', active_pane_id='%7')
+    ensure_calls: list[dict[str, object]] = []
+
+    def ensure_runtime(*args, **kwargs):
+        del args
+        ensure_calls.append(dict(kwargs))
+        return RuntimeLaunchResult(launched=True, binding=launched_binding)
+
+    execution = start_agent_runtime(
+        context=object(),
+        command=SimpleNamespace(restore=False),
+        runtime_service=runtime_service,
+        agent_name='agent1',
+        spec=SimpleNamespace(name='agent1', provider='codex', runtime_mode=SimpleNamespace(value='pane-backed')),
+        plan=SimpleNamespace(workspace_path='/tmp/ws'),
+        binding=None,
+        raw_binding=_binding(runtime_ref='tmux:%3'),
+        stale_binding=True,
+        assigned_pane_id='%7',
+        style_index=2,
+        project_id='proj-1',
+        tmux_socket_path='/tmp/ccb.sock',
+        namespace_epoch=7,
+        window_name='pair1',
+        ensure_agent_runtime_fn=ensure_runtime,
+        launch_binding_hint_fn=lambda **kwargs: None,
+        relabel_project_namespace_pane_fn=lambda **kwargs: '%7',
+        same_tmux_socket_path_fn=lambda left, right: left == right,
+    )
+
+    assert execution.agent_result.action == 'relaunched'
+    assert ensure_calls[-1]['assigned_pane_id'] == '%7'
+    assert ensure_calls[-1]['expected_pane_identity'] == {
+        'slot': 'agent1',
+        'window': 'pair1',
+        'epoch': 7,
+    }
+
+
+def test_start_agent_runtime_without_namespace_epoch_launches_without_identity_check() -> None:
+    runtime_service = _RuntimeService()
+    launched_binding = _binding(runtime_ref='tmux:%7', session_ref='session-7', pane_id='%7', active_pane_id='%7')
+    ensure_calls: list[dict[str, object]] = []
+
+    def ensure_runtime(*args, **kwargs):
+        del args
+        ensure_calls.append(dict(kwargs))
+        return RuntimeLaunchResult(launched=True, binding=launched_binding)
+
+    start_agent_runtime(
+        context=object(),
+        command=SimpleNamespace(restore=False),
+        runtime_service=runtime_service,
+        agent_name='agent1',
+        spec=SimpleNamespace(name='agent1', provider='codex', runtime_mode=SimpleNamespace(value='pane-backed')),
+        plan=SimpleNamespace(workspace_path='/tmp/ws'),
+        binding=None,
+        raw_binding=_binding(runtime_ref='tmux:%3'),
+        stale_binding=True,
+        assigned_pane_id='%7',
+        style_index=2,
+        project_id='proj-1',
+        tmux_socket_path='/tmp/ccb.sock',
+        namespace_epoch=None,
+        window_name='pair1',
+        ensure_agent_runtime_fn=ensure_runtime,
+        launch_binding_hint_fn=lambda **kwargs: None,
+        relabel_project_namespace_pane_fn=lambda **kwargs: '%7',
+        same_tmux_socket_path_fn=lambda left, right: left == right,
+    )
+
+    assert 'expected_pane_identity' not in ensure_calls[-1]
+
+
 def test_start_agent_runtime_launches_herdr_assigned_pane_even_with_existing_binding() -> None:
     runtime_service = _RuntimeService()
     existing_binding = _binding(

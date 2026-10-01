@@ -43,6 +43,7 @@ def launch_runtime_pane(
     pane_meets_minimum_size_fn,
     best_effort_kill_tmux_pane_fn,
     allow_detached_fallback: bool,
+    expected_pane_identity: Mapping[str, object] | None = None,
 ):
     if _is_herdr_pane_ref(assigned_pane_ref):
         pane_ref = dict(assigned_pane_ref or {})
@@ -68,6 +69,7 @@ def launch_runtime_pane(
         pane_meets_minimum_size_fn=pane_meets_minimum_size_fn,
         best_effort_kill_tmux_pane_fn=best_effort_kill_tmux_pane_fn,
         allow_detached_fallback=allow_detached_fallback,
+        expected_pane_identity=expected_pane_identity,
     )
 
 

@@ -56,6 +56,8 @@ def resolve_runtime_binding_state(
             style_index=style_index,
             tmux_socket_path=tmux_socket_path,
             namespace_backend_impl=namespace_backend_impl,
+            window_name=window_name,
+            namespace_epoch=namespace_epoch,
             ensure_agent_runtime_fn=ensure_agent_runtime_fn,
             launch_binding_hint_fn=launch_binding_hint_fn,
             provider_prepared=provider_prepared,
@@ -133,6 +135,8 @@ def launch_or_reuse_binding(
     style_index: int,
     tmux_socket_path: str | None,
     namespace_backend_impl: str | None = None,
+    window_name: str | None = None,
+    namespace_epoch: int | None = None,
     ensure_agent_runtime_fn,
     launch_binding_hint_fn,
     provider_prepared: bool = False,
@@ -147,6 +151,16 @@ def launch_or_reuse_binding(
         tmux_socket_path=tmux_socket_path,
         provider_prepared=provider_prepared,
     )
+    if assigned_pane_id is not None and namespace_epoch is not None:
+        # A namespace assignment is captured when the topology is materialized; if the
+        # namespace is rebuilt before the launch, the pane id can now name another
+        # agent's pane.  State the identity the pane must still carry so the launcher
+        # can refuse a foreign respawn (see tmux_panes.require_assigned_pane_identity).
+        launch_kwargs['expected_pane_identity'] = {
+            'slot': str(getattr(spec, 'name', '') or '').strip(),
+            'window': window_name,
+            'epoch': int(namespace_epoch),
+        }
     if assigned_pane_ref is not None:
         launch_kwargs['assigned_pane_ref'] = assigned_pane_ref
     if namespace_ref is not None:

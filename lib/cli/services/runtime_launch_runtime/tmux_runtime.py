@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from time import monotonic_ns
 
@@ -74,6 +75,7 @@ def launch_runtime(
     tmux_socket_path: str | None = None,
     namespace_backend_impl: str | None = None,
     allow_detached_fallback: bool = True,
+    expected_pane_identity: Mapping[str, object] | None = None,
 ) -> dict[str, float]:
     launch_started_ns = monotonic_ns()
     timings_ms: dict[str, float] = {}
@@ -155,6 +157,7 @@ def launch_runtime(
                 allow_detached_fallback=(
                     False if backend_is_herdr else allow_detached_fallback
                 ),
+                expected_pane_identity=expected_pane_identity,
             )
             pane_id = pane_runtime_id(pane)
         finally:

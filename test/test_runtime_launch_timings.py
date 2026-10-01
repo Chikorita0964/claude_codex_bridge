@@ -290,6 +290,92 @@ def test_ensure_runtime_skips_tmux_tool_check_for_herdr_assigned_pane(monkeypatc
     assert launched['namespace_backend_impl'] == 'herdr'
 
 
+def test_ensure_runtime_forwards_expected_pane_identity_to_launch(monkeypatch) -> None:
+    monkeypatch.setattr(ensure_runtime, '_pane_backed_launcher', lambda spec: object())
+    monkeypatch.setattr(ensure_runtime.shutil, 'which', lambda name: f'/usr/bin/{name}')
+    launched: dict[str, object] = {}
+
+    def launch(*args, **kwargs):
+        del args
+        launched.update(kwargs)
+        return {}
+
+    identity = {'slot': 'agent1', 'window': 'pair1', 'epoch': 7}
+    ensure_runtime.ensure_agent_runtime(
+        SimpleNamespace(project=SimpleNamespace(project_root='/tmp/project')),
+        object(),
+        SimpleNamespace(name='agent1', provider='codex', runtime_mode=RuntimeMode.PANE_BACKED),
+        SimpleNamespace(workspace_path='/tmp/workspace'),
+        None,
+        runtime_launch_result_cls=RuntimeLaunchResult,
+        binding_runtime_alive_fn=lambda binding: False,
+        provider_executable_fn=lambda provider: provider,
+        cleanup_stale_tmux_binding_fn=lambda binding: None,
+        launch_runtime_fn=launch,
+        resolve_agent_binding_fn=lambda **kwargs: object(),
+        assigned_pane_id='%7',
+        expected_pane_identity=identity,
+    )
+
+    assert launched['assigned_pane_id'] == '%7'
+    assert launched['expected_pane_identity'] == identity
+
+
+def test_launch_tmux_runtime_forwards_expected_identity_to_pane_launch(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def launch_runtime_pane(backend, **kwargs):
+        del backend
+        captured.update(kwargs)
+        return '%9'
+
+    monkeypatch.setattr(tmux_runtime, 'launch_runtime_pane', launch_runtime_pane)
+    monkeypatch.setattr(tmux_runtime, 'apply_ccb_pane_identity', lambda *args, **kwargs: None)
+
+    class Backend:
+        _socket_name = 'ccb-test'
+        _socket_path = '/tmp/ccb-test.sock'
+        backend_impl = 'tmux'
+
+    launcher = SimpleNamespace(
+        prepare_runtime=None,
+        resolve_run_cwd=None,
+        prepare_launch_context=None,
+        build_start_cmd=lambda *args, **kwargs: 'provider start',
+        build_session_payload=lambda **kwargs: {'provider': 'codex'},
+        post_launch=None,
+    )
+    context = SimpleNamespace(
+        paths=SimpleNamespace(agent_dir=lambda name: tmp_path / '.ccb' / 'agents' / name),
+        project=SimpleNamespace(project_id='project-test'),
+    )
+    spec = SimpleNamespace(name='demo', provider='codex')
+    plan = SimpleNamespace(workspace_path=tmp_path / 'workspace')
+    identity = {'slot': 'demo', 'window': 'pair1', 'epoch': 7}
+
+    tmux_runtime.launch_runtime(
+        context,
+        object(),
+        spec,
+        plan,
+        launcher,
+        backend_factory=lambda **kwargs: Backend(),
+        pane_title_marker_fn=lambda context, spec: 'CCB-demo',
+        launch_session_id_fn=lambda agent_name: 'ccb-demo-session',
+        create_detached_tmux_pane_fn=lambda *args, **kwargs: pytest.fail('unexpected detached pane'),
+        pane_meets_minimum_size_fn=lambda *args, **kwargs: True,
+        best_effort_kill_tmux_pane_fn=lambda *args, **kwargs: None,
+        write_session_file_fn=lambda **kwargs: None,
+        assigned_pane_id='%9',
+        tmux_socket_path='/tmp/ccb-test.sock',
+        allow_detached_fallback=False,
+        expected_pane_identity=identity,
+    )
+
+    assert captured['assigned_pane_id'] == '%9'
+    assert captured['expected_pane_identity'] == identity
+
+
 def test_runtime_backend_factory_binds_herdr_namespace_ref(monkeypatch) -> None:
     namespace_ref = {
         'backend_family': 'herdr-native',
