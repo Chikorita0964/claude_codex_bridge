@@ -86,6 +86,7 @@ class RuntimeService:
         self._daemon_generation_getter = daemon_generation_getter
         self._clock = clock
         self._attach_lock = RLock()
+        self._pane_recovery_outcomes: dict[str, str] = {}
 
     def attach(
         self,
@@ -445,7 +446,7 @@ class RuntimeService:
         )
 
     def refresh_provider_binding(self, agent_name: str, *, recover: bool = False) -> AgentRuntime | None:
-        return refresh_provider_binding_impl(
+        refresh = refresh_provider_binding_impl(
             layout=self._layout,
             registry=self._registry,
             session_bindings=self._session_bindings,
@@ -454,6 +455,20 @@ class RuntimeService:
             agent_name=agent_name,
             recover=recover,
         )
+        self._record_pane_recovery_outcome(agent_name, refresh.pane_outcome)
+        return refresh.runtime
+
+    def _record_pane_recovery_outcome(self, agent_name: str, pane_outcome: str | None) -> None:
+        if pane_outcome is None:
+            self._pane_recovery_outcomes.pop(agent_name, None)
+            return
+        self._pane_recovery_outcomes[agent_name] = pane_outcome
+
+    def pane_recovery_outcome(self, agent_name: str) -> str | None:
+        """The pane outcome the most recent ``refresh_provider_binding`` reported for this agent
+        (local patch, ccb-team-kit): the recovery loop reads it to tell a pane that was live and
+        owned all along from one this recovery respawned, which the pane id alone cannot say."""
+        return self._pane_recovery_outcomes.get(agent_name)
 
     def _upsert_authority(self, runtime: AgentRuntime) -> AgentRuntime:
         upsert_authority = getattr(self._registry, 'upsert_authority', None)

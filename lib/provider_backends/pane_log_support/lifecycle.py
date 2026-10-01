@@ -7,6 +7,7 @@ from provider_core.tmux_ownership import (
     inspect_tmux_pane_ownership,
     ownership_error_text,
 )
+from provider_runtime.pane_recovery_outcome import LIVE_OWNED, publish_pane_recovery_outcome
 from provider_runtime.session_payload import session_uses_tmux_compatible_pane
 from terminal_runtime.mux_backend_contract import MuxCommandErrorV2
 
@@ -30,6 +31,10 @@ def ensure_pane(
     now_str_fn: Callable[[], str],
     attach_pane_log_fn: Callable[[object, object, object], None] = attach_pane_log,
 ) -> tuple[bool, str]:
+    # Local patch (ccb-team-kit): publish the action this call takes, so a recovery that finds the
+    # pane alive and owned can be recognised as the false alarm it is. Cleared first: a session
+    # reused across calls must never report the previous call's action.
+    publish_pane_recovery_outcome(session, None)
     backend = session.backend()
     if not backend:
         return False, 'Terminal backend not available'
@@ -45,6 +50,7 @@ def ensure_pane(
         if tmux_compatible:
             apply_session_tmux_identity(session, backend, live_pane)
         attach_pane_log_fn(session, backend, live_pane)
+        publish_pane_recovery_outcome(session, LIVE_OWNED)
         return True, live_pane
 
     if tmux_compatible and session.terminal == 'tmux':

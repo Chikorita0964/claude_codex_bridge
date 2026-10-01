@@ -6,6 +6,7 @@ import pytest
 
 from provider_backends.pane_log_support import lifecycle
 from provider_backends.pane_log_support import session as pane_session
+from provider_runtime.pane_recovery_outcome import LIVE_OWNED, RESPAWN, pane_recovery_outcome
 from terminal_runtime.mux_backend_contract import MuxCommandErrorV2
 
 
@@ -114,6 +115,74 @@ def test_herdr_ensure_pane_uses_pane_ref_liveness_and_skips_tmux_ownership(
     assert backend.ensure_log_calls == [pane_ref]
     assert backend.capture_calls == []
     assert backend.respawn_calls == []
+
+
+class _SpawnableBackend:
+    """A tmux-compatible backend whose one pane is either alive or gone."""
+
+    def __init__(self, *, alive: bool) -> None:
+        self.alive = alive
+        self.respawned: list[str] = []
+
+    def is_alive(self, pane) -> bool:
+        return self.alive
+
+    def pane_exists(self, pane) -> bool:
+        return True
+
+    def respawn_pane(self, pane, *, cmd: str, cwd: str | None = None, remain_on_exit: bool = True) -> None:
+        self.respawned.append(str(pane))
+        self.alive = True
+
+
+def _tmux_session(tmp_path, backend, *, pane_id: str = '%1'):
+    return SimpleNamespace(
+        pane_id=pane_id,
+        terminal='tmux',
+        data={
+            'agent_name': 'agent1',
+            'terminal': 'tmux',
+            'pane_id': pane_id,
+            'start_cmd': 'codex --continue',
+            'work_dir': str(tmp_path),
+            'runtime_dir': str(tmp_path),
+        },
+        work_dir=str(tmp_path),
+        runtime_dir=tmp_path,
+        start_cmd='codex --continue',
+        backend=lambda: backend,
+        user_option_lookup=lambda: {},
+        _write_back=lambda: None,
+    )
+
+
+def test_tmux_ensure_pane_publishes_live_owned_for_a_pane_it_leaves_alone(tmp_path) -> None:
+    backend = _SpawnableBackend(alive=True)
+    session = _tmux_session(tmp_path, backend)
+
+    assert lifecycle.ensure_pane(
+        session,
+        now_str_fn=lambda: 'now',
+        attach_pane_log_fn=lambda *args: None,
+    ) == (True, '%1')
+    assert backend.respawned == []
+    assert pane_recovery_outcome(session) == LIVE_OWNED
+
+
+def test_tmux_ensure_pane_publishes_respawn_for_the_pane_it_respawned(tmp_path) -> None:
+    """The same pane id comes back, so the id cannot say whether anything was restarted - the
+    outcome the recovery gates on must."""
+    backend = _SpawnableBackend(alive=False)
+    session = _tmux_session(tmp_path, backend)
+
+    assert lifecycle.ensure_pane(
+        session,
+        now_str_fn=lambda: 'now',
+        attach_pane_log_fn=lambda *args: None,
+    ) == (True, '%1')
+    assert backend.respawned == ['%1']
+    assert session.pane_id == '%1'
+    assert pane_recovery_outcome(session) == RESPAWN
 
 
 def test_herdr_ensure_pane_reports_actionable_unsupported_liveness(

@@ -8,8 +8,10 @@ from ccbd.services.runtime_recovery_policy import (
     should_record_recovery_capability_block,
 )
 from ccbd.system import parse_utc_timestamp
+from provider_runtime.pane_recovery_outcome import LIVE_OWNED
 
-from .recovery_context import build_recovery_context
+from .loop_runtime import runtime_active_pane_id
+from .recovery_context import RecoveryContext, build_recovery_context
 from .recovery_transitions import (
     MAX_CONSECUTIVE_RECOVERY_ATTEMPTS,
     RECOVERY_STABILITY_WINDOW_S,
@@ -105,10 +107,11 @@ def recover_runtime(
     recovery_failure_count = int(getattr(recovering, 'recovery_failure_count', 0) or 0) + 1
 
     try:
-        refreshed, failure_reason = attempt_recovery_action(ctx, recovering=recovering)
+        refreshed, failure_reason, pane_outcome = attempt_recovery_action(ctx, recovering=recovering)
     except Exception as exc:
         refreshed = ctx.registry.get(ctx.agent_name) or recovering
         failure_reason = f'{type(exc).__name__}: {exc}'
+        pane_outcome = None
 
     if refreshed is None:
         return mark_recovery_missing(
@@ -123,6 +126,20 @@ def recover_runtime(
     refreshed = ctx.align_runtime_authority_fn(refreshed)
     next_health = normalized_runtime_health(refreshed) or refreshed.health
     if next_health in SUCCESS_RUNTIME_HEALTHS:
+        if _pane_already_live_owned(ctx, refreshed=refreshed, pane_outcome=pane_outcome):
+            # Local patch (ccb-team-kit): the alarm was raised on a live pane that ensure_pane found
+            # alive and owned - nothing was respawned or replaced, so there is nothing to stabilise.
+            # End it here, keeping the restart count, instead of holding the agent's mailbox through
+            # the 90 s window and counting the false alarm toward the circuit.
+            return mark_recovery_succeeded(
+                ctx,
+                refreshed=refreshed,
+                attempted_at=attempted_at,
+                restart_count=ctx.runtime.restart_count,
+                prior_health=prior_health,
+                next_health='healthy',
+                pane_outcome=pane_outcome,
+            )
         return mark_recovery_probing(
             ctx,
             refreshed=refreshed,
@@ -143,6 +160,20 @@ def recover_runtime(
         next_health=next_health,
         failure_reason=failure_reason,
     )
+
+
+def _pane_already_live_owned(ctx: RecoveryContext, *, refreshed, pane_outcome: str | None) -> bool:
+    """True when this recovery found the very pane the runtime already had, alive and owned.
+
+    Gated on what ``ensure_pane`` reported, never on the pane id alone: an in-place respawn keeps
+    the pane id too, and a runtime whose session reported nothing keeps the probing path."""
+    if pane_outcome != LIVE_OWNED:
+        return False
+    previous_pane_id = runtime_active_pane_id(ctx.runtime)
+    current_pane_id = runtime_active_pane_id(refreshed)
+    if previous_pane_id is None or current_pane_id is None:
+        return False
+    return previous_pane_id == current_pane_id
 
 
 def _recovery_probe_active(runtime) -> bool:

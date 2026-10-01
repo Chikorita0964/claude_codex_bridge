@@ -11,6 +11,11 @@ from ccbd.services.project_namespace_pane import ProjectNamespacePaneRecord
 from ccbd.supervision import RuntimeSupervisionLoop, SupervisionEventStore
 from project.resolver import bootstrap_project
 from provider_core.contracts import ProviderSessionBinding
+from provider_runtime.pane_recovery_outcome import (
+    LIVE_OWNED,
+    RESPAWN,
+    publish_pane_recovery_outcome,
+)
 from storage.paths import PathLayout
 from terminal_runtime.tmux_readiness import TmuxTransientServerUnavailable
 
@@ -109,6 +114,40 @@ def _binding_map(provider: str, session: RecoveringBindingSession) -> dict[str, 
             session_id_attr='fake_session_id',
             session_path_attr='fake_session_path',
         )
+    }
+
+
+class PaneOutcomeBindingSession:
+    """A session whose ``ensure_pane`` keeps the pane and reports what it did, the way the real
+    provider sessions do: ``live_owned`` touched nothing, ``respawn`` respawned the same pane."""
+
+    def __init__(self, *, pane_id: str, pane_outcome: str | None, fake_session_id: str) -> None:
+        self.pane_id = pane_id
+        self.terminal = 'tmux'
+        self.fake_session_id = fake_session_id
+        self.fake_session_path = None
+        self._pane_outcome = pane_outcome
+        self.ensure_calls = 0
+
+    def ensure_pane(self):
+        self.ensure_calls += 1
+        publish_pane_recovery_outcome(self, self._pane_outcome)
+        return True, self.pane_id
+
+
+def _pane_outcome_bindings(
+    sessions: dict[str, PaneOutcomeBindingSession],
+) -> dict[str, ProviderSessionBinding]:
+    return {
+        provider: ProviderSessionBinding(
+            provider=provider,
+            load_session=lambda root, instance, provider=provider, session=session: (
+                session if instance in {None, provider} else None
+            ),
+            session_id_attr='fake_session_id',
+            session_path_attr='fake_session_path',
+        )
+        for provider, session in sessions.items()
     }
 
 
@@ -237,6 +276,88 @@ def test_runtime_supervision_loop_recovers_idle_degraded_agent(tmp_path: Path) -
     assert events[1].result_health == 'recovering'
     assert events[2].result_health == 'healthy'
     assert events[2].daemon_generation == 7
+
+
+def test_runtime_supervision_loop_ends_a_live_owned_recovery_at_once(tmp_path: Path) -> None:
+    """A recovery whose pane was alive and owned all along is a false alarm: it ends in the tick
+    that raised it, keeping the restart count and leaving nothing for the circuit to accumulate -
+    while an in-place respawn of the very same pane still probes, because the pane id cannot tell
+    the two apart."""
+    project_root = tmp_path / 'repo-supervision-live-owned'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude')
+    registry = AgentRegistry(layout, config)
+    live_owned = PaneOutcomeBindingSession(
+        pane_id='%41',
+        pane_outcome=LIVE_OWNED,
+        fake_session_id='codex-session',
+    )
+    respawned = PaneOutcomeBindingSession(
+        pane_id='%51',
+        pane_outcome=RESPAWN,
+        fake_session_id='claude-session',
+    )
+    runtime_service = RuntimeService(
+        layout,
+        registry,
+        ctx.project_id,
+        session_bindings=_pane_outcome_bindings({'codex': live_owned, 'claude': respawned}),
+        clock=lambda: '2026-03-18T00:00:00Z',
+    )
+    codex = _runtime('codex', project_id=ctx.project_id, layout=layout, pid=101, health='pane-missing')
+    codex.runtime_ref = 'tmux:%41'
+    codex.pane_id = '%41'
+    codex.pane_state = 'missing'
+    codex.recovery_failure_count = 5
+    claude = _runtime('claude', project_id=ctx.project_id, layout=layout, pid=202, health='pane-dead')
+    claude.runtime_ref = 'tmux:%51'
+    claude.pane_id = '%51'
+    claude.pane_state = 'dead'
+    registry.upsert(codex)
+    registry.upsert(claude)
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        clock=lambda: '2026-03-18T00:00:10Z',
+        generation_getter=lambda: 7,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'codex': 'healthy', 'claude': 'recovering'}
+    assert live_owned.ensure_calls == 1
+    codex_runtime = registry.get('codex')
+    assert codex_runtime is not None
+    assert codex_runtime.state is AgentState.IDLE
+    assert codex_runtime.health == 'healthy'
+    assert codex_runtime.reconcile_state == 'steady'
+    assert codex_runtime.runtime_ref == 'tmux:%41'
+    assert codex_runtime.restart_count == 0
+    assert codex_runtime.recovery_failure_count == 0
+    assert codex_runtime.last_failure_reason is None
+    respawned_runtime = registry.get('claude')
+    assert respawned_runtime is not None
+    assert respawned_runtime.health == 'recovering'
+    assert respawned_runtime.runtime_ref == 'tmux:%51'
+    assert respawned_runtime.restart_count == 1
+    assert respawned_runtime.recovery_failure_count == 1
+    events = SupervisionEventStore(layout).read_all()
+    assert [(event.event_kind, event.agent_name) for event in events] == [
+        ('recover_started', 'codex'),
+        ('recover_succeeded', 'codex'),
+        ('recover_started', 'claude'),
+        ('recover_probing', 'claude'),
+    ]
+    assert events[1].prior_health == 'pane-missing'
+    assert events[1].result_health == 'healthy'
+    assert events[1].details['pane_outcome'] == 'live_owned'
+    assert events[1].details['stable_after_s'] == 0
+    assert events[1].details['restart_count'] == 0
 
 
 def test_runtime_supervision_loop_adopts_canonical_epoch_when_daemon_generation_changes(tmp_path: Path) -> None:

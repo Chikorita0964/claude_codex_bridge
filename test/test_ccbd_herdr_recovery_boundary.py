@@ -484,7 +484,7 @@ def test_herdr_refresh_redacts_raw_restore_token_from_runtime_record(tmp_path) -
         ),
         agent_name="codex",
         recover=True,
-    )
+    ).runtime
 
     assert refreshed is not None
     record = refreshed.to_record()
@@ -545,7 +545,7 @@ def test_herdr_refresh_carries_session_runtime_metadata_to_supervision(tmp_path)
         ),
         agent_name="codex",
         recover=True,
-    )
+    ).runtime
 
     assert refreshed is not None
     assert refreshed.provider_runtime_backend_ref == session.data["provider_runtime_backend_ref"]

@@ -16,6 +16,11 @@ from .lifecycle_common import (
     pane_lifecycle_target,
     persist_crash_log,
 )
+from provider_runtime.pane_recovery_outcome import (
+    REPLACEMENT,
+    RESPAWN,
+    publish_pane_recovery_outcome,
+)
 from provider_runtime.session_payload import session_uses_tmux_compatible_pane
 
 
@@ -109,6 +114,7 @@ def _backend_neutral_rebound_pane(
         bind_session_to_pane(session, str(pane_id), now_str_fn=now_str_fn)
         attach_pane_log_fn(session, backend, str(pane_id))
         clear_recovery_block(session)
+        publish_pane_recovery_outcome(session, RESPAWN)
         return True, str(pane_id)
     except Exception as exc:
         return False, f'{exc}'
@@ -181,6 +187,7 @@ def _respawn_existing_pane(
             attach_pane_log_fn=attach_pane_log_fn,
         )
         clear_recovery_block(session)
+        publish_pane_recovery_outcome(session, RESPAWN)
         return _RespawnOutcome(None)
     except Exception as exc:
         return _RespawnOutcome(f'{exc}')
@@ -304,6 +311,7 @@ def create_replacement_pane(
         now_str_fn=now_str_fn,
         attach_pane_log_fn=attach_pane_log_fn,
     )
+    publish_pane_recovery_outcome(session, REPLACEMENT)
     return str(new_pane)
 
 

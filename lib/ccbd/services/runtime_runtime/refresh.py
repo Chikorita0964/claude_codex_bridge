@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.models import AgentState, RuntimeBindingSource, normalize_runtime_binding_source
+from agents.models import AgentRuntime, AgentState, RuntimeBindingSource, normalize_runtime_binding_source
 from ccbd.services.runtime_recovery_policy import (
     PROVIDER_AUTH_REVOKED_RUNTIME_HEALTH,
     PROVIDER_RECOVERY_BLOCKED_RUNTIME_HEALTH,
 )
+from provider_runtime.pane_recovery_outcome import pane_recovery_outcome
 
 from ..provider_runtime_facts import build_provider_runtime_facts, ensure_provider_pane, load_provider_session
 from ..project_namespace_runtime.slot_replacement import (
@@ -42,6 +43,16 @@ class _PaneResolution:
     pane_id: str | None
     blocked_health: str | None = None
     blocked_detail: str | None = None
+    pane_outcome: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderBindingRefresh:
+    """A refresh and what its ``ensure_pane`` reported: ``pane_outcome`` is None when the call
+    never reached a provider session, or when the session published no outcome."""
+
+    runtime: AgentRuntime | None
+    pane_outcome: str | None = None
 
 
 def _session_recovery_block(session) -> tuple[str, str] | None:
@@ -79,7 +90,10 @@ def _resolve_pane(session, *, recover: bool) -> _PaneResolution:
         if block is not None:
             return _PaneResolution(None, blocked_health=block[0], blocked_detail=block[1])
         return _PaneResolution(None)
-    return _PaneResolution(str(pane_or_err or '').strip() or None)
+    return _PaneResolution(
+        str(pane_or_err or '').strip() or None,
+        pane_outcome=pane_recovery_outcome(session),
+    )
 
 
 def _patch_recovery_blocked_runtime(
@@ -161,16 +175,16 @@ def refresh_provider_binding(
 ):
     runtime = registry.get(agent_name)
     if runtime is None:
-        return None
+        return ProviderBindingRefresh(None)
     if normalize_runtime_binding_source(runtime.binding_source) is RuntimeBindingSource.EXTERNAL_ATTACH:
-        return runtime
+        return ProviderBindingRefresh(runtime)
     workspace_path = _workspace_path(runtime)
     if not workspace_path:
-        return runtime
+        return ProviderBindingRefresh(runtime)
     spec = registry.spec_for(agent_name)
     binding = session_bindings.get(spec.provider)
     if binding is None:
-        return runtime
+        return ProviderBindingRefresh(runtime)
 
     replacement_context = (
         resolve_project_slot_recovery_context(
@@ -184,25 +198,29 @@ def refresh_provider_binding(
     )
     session = load_provider_session(binding, Path(workspace_path), agent_name)
     if session is None:
-        return _attach_missing_session(
-            attach_runtime_fn=attach_runtime_fn,
-            agent_name=agent_name,
-            workspace_path=workspace_path,
-            runtime=runtime,
+        return ProviderBindingRefresh(
+            _attach_missing_session(
+                attach_runtime_fn=attach_runtime_fn,
+                agent_name=agent_name,
+                workspace_path=workspace_path,
+                runtime=runtime,
+            )
         )
 
     inject_project_slot_recovery_hints(session, replacement_context)
     pane_resolution = _resolve_pane(session, recover=recover)
     if recover and pane_resolution.blocked_health is not None:
-        return _patch_recovery_blocked_runtime(
-            patch_runtime_state_fn=patch_runtime_state_fn,
-            runtime=runtime,
-            health=pane_resolution.blocked_health,
-            detail=str(pane_resolution.blocked_detail or pane_resolution.blocked_health),
+        return ProviderBindingRefresh(
+            _patch_recovery_blocked_runtime(
+                patch_runtime_state_fn=patch_runtime_state_fn,
+                runtime=runtime,
+                health=pane_resolution.blocked_health,
+                detail=str(pane_resolution.blocked_detail or pane_resolution.blocked_health),
+            )
         )
     pane_id = pane_resolution.pane_id
     if recover and pane_id is None:
-        return runtime
+        return ProviderBindingRefresh(runtime)
     if pane_id is not None:
         relabel_project_slot_pane(
             pane_id=pane_id,
@@ -215,19 +233,22 @@ def refresh_provider_binding(
         provider=spec.provider,
         pane_id_override=pane_id,
     )
-    return _attach_healthy_runtime(
-        attach_runtime_fn=attach_runtime_fn,
-        agent_name=agent_name,
-        workspace_path=workspace_path,
-        runtime=runtime,
-        provider=spec.provider,
-        facts=facts,
-        active_pane_id=pane_id,
-        slot_key=(replacement_context.slot_key if replacement_context is not None else getattr(runtime, 'slot_key', None) or agent_name),
-        window_id=(replacement_context.workspace_window_id if replacement_context is not None else getattr(runtime, 'window_id', None)),
-        workspace_epoch=(
-            replacement_context.workspace_epoch if replacement_context is not None else getattr(runtime, 'workspace_epoch', None)
+    return ProviderBindingRefresh(
+        _attach_healthy_runtime(
+            attach_runtime_fn=attach_runtime_fn,
+            agent_name=agent_name,
+            workspace_path=workspace_path,
+            runtime=runtime,
+            provider=spec.provider,
+            facts=facts,
+            active_pane_id=pane_id,
+            slot_key=(replacement_context.slot_key if replacement_context is not None else getattr(runtime, 'slot_key', None) or agent_name),
+            window_id=(replacement_context.workspace_window_id if replacement_context is not None else getattr(runtime, 'window_id', None)),
+            workspace_epoch=(
+                replacement_context.workspace_epoch if replacement_context is not None else getattr(runtime, 'workspace_epoch', None)
+            ),
         ),
+        pane_outcome=pane_resolution.pane_outcome,
     )
 
 
