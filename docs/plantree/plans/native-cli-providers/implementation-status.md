@@ -5,13 +5,18 @@ Last updated: 2026-09-30
 
 ## Current Phase
 
-2026-09-30 release candidate: OMP/Pi no longer treat `/model` and other
+2026-09-30 published release: stable `v8.7.5` ships the OMP/Pi repair so
+`/model` and other
 control-only input events as replacements for an active CCB ask. Supersession
 moves to the actual `before_agent_start` boundary; native session switches
 remain explicit. The shared extension passed Bun event replay and focused
 regressions, and a real OMP 18.3.5 active-turn model switch preserved the same
-job through an exact non-empty reply. Real Pi TUI model switching remains an
-explicit post-release qualification limit. [Evidence](evidence/omp-pi-control-input-supersession-20260930.md).
+job through an exact non-empty reply. All seven release/test workflows, all
+ten GitHub assets, npm `latest`, registry signature verification, and an
+isolated exact-version installation are verified. Real Pi TUI model switching
+remains an explicit post-release qualification limit.
+[Implementation evidence](evidence/omp-pi-control-input-supersession-20260930.md);
+[publication receipt](evidence/v8.7.5-release-20260930.md).
 
 2026-09-29 continuity release: OMP title-slot validation and Pi manual
 session observation/restore policy fixes are published in `v8.7.4`.
@@ -134,6 +139,11 @@ rollback. Interrupted in-flight Cursor jobs remain resubmit-required.
 
 ## Last Landed
 
+- Stable `v8.7.5` was published from commit `8f63ff63e` with annotated tag
+  `v8.7.5`, a bilingual GitHub Release, ten platform/helper assets, and
+  `@seemseam/ccb@8.7.5` on npm `latest`. All seven release/test workflows
+  completed successfully, and a disposable public npm installation reported
+  the same version and commit. [Receipt](evidence/v8.7.5-release-20260930.md).
 - OMP visible-pane source candidate: managed extension/dispatch sidecars,
   exact request binding, final `agent_end` completion, cancellation, restore,
   manifest alignment, and explicit headless compatibility are implemented and
@@ -294,6 +304,19 @@ Kimi hardening source work is unblocked. Remaining Kimi prompt-mode and auth
 diagnostic ideas stay deferred/open until real usage needs them.
 
 ## Last Verified
+
+`v8.7.5` release verification, 2026-09-30:
+
+- Focused control-input and provider regressions: `302 passed, 2 skipped`;
+  release/install/platform gates: `95 passed`.
+- Real OMP 18.3.5 switched models during an active tool call and completed the
+  same job once with exact reply `CCB_RELEASE_875_MODEL_SWITCH_OK` and no
+  `request_superseded` event.
+- All seven release/test workflows succeeded; the GitHub Release exposes ten
+  expected assets and complete English/Chinese notes.
+- `@seemseam/ccb@8.7.5` is public on npm `latest`; an isolated install
+  reported `v8.7.5` / `8f63ff6`, and `npm audit signatures` verified the
+  registry signature. [Receipt](evidence/v8.7.5-release-20260930.md).
 
 OMP required CCB skill projection, 2026-09-05:
 

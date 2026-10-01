@@ -25,14 +25,13 @@ Last updated: 2026-09-30
   agent-local config state, and provider-specific stream terminalization. Qoder
   CLI CN is registered separately as `qoderclicn` and reuses that corrected
   contract for `@qodercn-ai/qoderclicn` rather than the retired generic adapter.
-- Last verified: stable `v8.6.9` was published from commit `677edc72c` with all
-  seven release/test workflows successful, 10 GitHub assets, verified public
-  checksums, and `@seemseam/ccb@8.6.9` on npm `latest`. The source candidate
-  passed the complete
-  pytest gate with `7166 passed, 3 skipped, 4 subtests passed`; the focused
-  Linux/Windows release, Mobile version, and Windows PR-isolation set passed
-  with `76 passed`. The bilingual notes check, `npm pack --dry-run`, and
-  isolated source-wrapper version check also passed for `8.6.9`.
+- Last verified: stable `v8.7.5` was published from commit `8f63ff63e` with
+  all seven release/test workflows successful, ten GitHub assets, bilingual
+  release notes, and `@seemseam/ccb@8.7.5` on npm `latest`. Focused
+  OMP/Pi and dispatcher regressions passed `302` tests with `2` skips;
+  release/install/platform gates passed `95` tests. A disposable public npm
+  install reported `v8.7.5` / `8f63ff6`, and registry signature
+  verification passed. [Receipt](evidence/v8.7.5-release-20260930.md).
 - Qoder correction verification on 2026-07-22 used real `qodercli 1.1.2`
   help/version and credential-free stream output plus focused launcher,
   execution, catalog, registry, and storage tests. Authenticated completion
@@ -76,9 +75,12 @@ Last updated: 2026-09-30
 - OMP/Pi completion binding now distinguishes submitted UI/control input from
   an actual new provider turn: `/model` preserves the active ask, while
   `before_agent_start` for a different prompt and `session_switch` supersede it
-  explicitly. Focused extension replay and provider regressions pass; a real
-  OMP active-turn switch also completed the same job with an exact reply.
-  [Evidence](evidence/omp-pi-control-input-supersession-20260930.md).
+  explicitly. Stable `v8.7.5` publishes the repair. Focused extension replay
+  and provider regressions pass; a real OMP active-turn switch also completed
+  the same job with an exact reply. All seven release/test workflows, ten
+  GitHub assets, and the public npm package are verified.
+  [Implementation evidence](evidence/omp-pi-control-input-supersession-20260930.md);
+  [publication receipt](evidence/v8.7.5-release-20260930.md).
 
 - Implemented OMP visible-pane ask execution with owner-only lifecycle and
   dispatch sidecars, exact prompt/request/actor/launch/runtime binding,

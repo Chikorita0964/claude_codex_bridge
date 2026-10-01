@@ -47,6 +47,9 @@ override the shipped contracts.
 
 ## File Map
 
+- [v8.7.5 publication receipt](evidence/v8.7.5-release-20260930.md):
+  immutable source/tag identity, public assets, npm installation, CI, and
+  retained Pi qualification limit.
 - [OMP/Pi control-input supersession repair](evidence/omp-pi-control-input-supersession-20260930.md):
   `/model` no longer terminates an active ask; true new model turns and session
   switches retain explicit supersession evidence.
