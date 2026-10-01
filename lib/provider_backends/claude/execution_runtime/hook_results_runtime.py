@@ -14,7 +14,7 @@ from completion.models import (
 )
 from provider_execution.base import ProviderPollResult, ProviderSubmission
 from provider_execution.common import build_item, request_anchor_from_runtime_state
-from provider_hooks.artifacts import load_event
+from provider_hooks.artifacts import is_reserved_req_id, iter_reserved_events, load_event
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,11 @@ _EMPTY_HOOK_FINAL_TEXT_GRACE_S = 180.0
 
 
 def poll_exact_hook(submission: ProviderSubmission, *, now: str) -> ProviderPollResult | None:
-    evidence = load_strict_exact_hook_evidence(submission, now=now)
+    evidence = load_strict_exact_hook_evidence(
+        submission,
+        now=now,
+        allow_unattributed=True,
+    )
     if evidence is None:
         return None
     event = evidence.event
@@ -53,6 +57,12 @@ def poll_exact_hook(submission: ProviderSubmission, *, now: str) -> ProviderPoll
             "empty_hook_final_text_grace_elapsed": True,
             "empty_hook_final_text_grace_s": _EMPTY_HOOK_FINAL_TEXT_GRACE_S,
             "empty_hook_age_s": age_s,
+        }
+    if is_reserved_req_id(str(event.get("req_id") or "")):
+        extra_diagnostics = {
+            **dict(extra_diagnostics or {}),
+            "reply_without_job": True,
+            "reply_without_job_req_id": str(event.get("req_id") or ""),
         }
     return poll_hook_event(
         submission,
@@ -113,6 +123,7 @@ def load_strict_exact_hook_evidence(
     *,
     now: str | None = None,
     require_reply: bool = False,
+    allow_unattributed: bool = False,
 ) -> ExactHookEvidence | None:
     """Load independently attributable hook evidence for every terminal path.
 
@@ -120,6 +131,12 @@ def load_strict_exact_hook_evidence(
     belongs to the current managed agent/session. Normal polling, recovery,
     and cancellation all fail closed unless provider, agent, workspace,
     request time, and Claude session identity agree.
+
+    ``allow_unattributed`` additionally accepts a kept reply from a turn that
+    resolves to no CCB job (the finish hook's reserved-id events). Because
+    such a reply has no request anchor to bind to, it is only attached while
+    the submission is active: provider, agent, workspace, Claude session, and
+    the accepted-at..now window must all still agree.
     """
     if not bool(submission.runtime_state.get("prompt_sent", False)):
         return None
@@ -127,9 +144,16 @@ def load_strict_exact_hook_evidence(
     if context is None:
         return None
     event = load_event(context.completion_dir, context.request_anchor)
+    unattributed = False
+    if not event and allow_unattributed:
+        event = _load_unattributed_hook_event(submission, context=context, now=now)
+        unattributed = event is not None
     if not event:
         return None
-    if str(event.get("req_id") or "").strip() != context.request_anchor:
+    if unattributed:
+        if not is_reserved_req_id(str(event.get("req_id") or "")):
+            return None
+    elif str(event.get("req_id") or "").strip() != context.request_anchor:
         return None
     if not hook_event_matches_submission(submission, event):
         return None
@@ -148,6 +172,40 @@ def load_strict_exact_hook_evidence(
     if require_reply and not hook_reply(event):
         return None
     return ExactHookEvidence(context=context, event=event, event_at=event_at)
+
+
+def _load_unattributed_hook_event(
+    submission: ProviderSubmission,
+    *,
+    context: HookPollContext,
+    now: str | None,
+) -> dict[str, object] | None:
+    """The newest kept reply event that belongs to this active submission.
+
+    Reserved-id events carry no job anchor; identity is the Claude session
+    plus the submission window, so an event that predates the submission
+    (or comes from another session) can never attach to it. When several
+    events land inside one window the newest turn end wins.
+    """
+    accepted_at = _parse_timestamp(submission.accepted_at)
+    observed_at = _parse_timestamp(now) if now is not None else None
+    candidates: list[tuple[datetime, dict[str, object]]] = []
+    for event in iter_reserved_events(context.completion_dir):
+        if not hook_event_matches_submission(submission, event):
+            continue
+        try:
+            hook_status(event)
+        except (TypeError, ValueError):
+            continue
+        event_at = _parse_timestamp(event.get("timestamp"))
+        if event_at is None or accepted_at is None or event_at < accepted_at:
+            continue
+        if now is not None and (observed_at is None or event_at > observed_at):
+            continue
+        candidates.append((event_at, event))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def capture_exact_hook_cancel_evidence(

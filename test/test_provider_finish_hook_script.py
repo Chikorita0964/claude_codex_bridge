@@ -100,6 +100,111 @@ def test_provider_finish_hook_writes_claude_completion_event(tmp_path: Path) -> 
     assert event["status"] == "completed"
 
 
+def test_provider_finish_hook_keeps_reply_from_turn_outside_any_job(tmp_path: Path) -> None:
+    """The worker2 shape: the nearest user record is a CCB_REPLY notice.
+
+    The parent-chain walk stops at the notice, so no CCB_REQ_ID resolves for
+    the turn. The reply must still be kept, under a reserved session+timestamp
+    id, instead of being silently dropped.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    completion_dir = tmp_path / "completion"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    transcript = tmp_path / "transcript.jsonl"
+    old_job = "job_413c67d56206"
+    reply = "done — T3 (permission-mode check) on ccb/worker2, commit 630e722"
+    transcript.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "uuid": "u1",
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": f"CCB_REQ_ID: {old_job}\n\nRun the task.",
+                    },
+                },
+                {
+                    "uuid": "a1",
+                    "parentUuid": "u1",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                },
+                {
+                    "uuid": "u2",
+                    "parentUuid": "a1",
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": (
+                            "CCB_REPLY from=adviser2 reply=rep_53b17510febd "
+                            f"status=completed job={old_job}"
+                        ),
+                    },
+                },
+                {
+                    "uuid": "a2",
+                    "parentUuid": "u2",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": reply}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+        "last_assistant_message": reply,
+        "session_id": "claude-session-worker2",
+    }
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "bin" / "ccb-provider-finish-hook.py"),
+            "--provider",
+            "claude",
+            "--completion-dir",
+            str(completion_dir),
+            "--agent-name",
+            "worker2",
+            "--workspace",
+            str(workspace),
+        ],
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    events_dir = completion_dir / "events"
+    kept_paths = sorted(events_dir.glob("reply_without_job__*.json"))
+    assert len(kept_paths) == 1, sorted(path.name for path in events_dir.glob("*"))
+    kept_path = kept_paths[0]
+    assert "claude-session-worker2" in kept_path.stem
+    assert not (events_dir / f"{old_job}.json").exists()
+    event = json.loads(kept_path.read_text(encoding="utf-8"))
+    assert event["req_id"] == kept_path.stem
+    assert event["provider"] == "claude"
+    assert event["agent_name"] == "worker2"
+    assert event["session_id"] == "claude-session-worker2"
+    assert event["reply"] == reply
+    assert event["status"] == "completed"
+    assert event["diagnostics"]["reply_without_job"] is True
+    assert event["diagnostics"]["reply_without_job_reason"] == "turn_has_no_request_anchor"
+
+
 def test_provider_finish_hook_marks_empty_claude_reply_incomplete(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[1]
     completion_dir = tmp_path / "completion"

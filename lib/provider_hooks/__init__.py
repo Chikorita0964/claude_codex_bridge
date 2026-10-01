@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from .artifacts import (
+    RESERVED_REQ_ID_PREFIX,
     completion_dir_from_session_data,
     event_path,
     extract_req_id,
+    is_reserved_req_id,
+    iter_reserved_events,
     latest_req_id_from_transcript,
     load_event,
+    reserved_req_id,
     write_event,
 )
 from .activity import (
@@ -38,6 +42,7 @@ __all__ = [
     "COMPLETION_STATUS_COMPLETED",
     "COMPLETION_STATUS_FAILED",
     "COMPLETION_STATUS_INCOMPLETE",
+    "RESERVED_REQ_ID_PREFIX",
     "build_activity_hook_command",
     "build_hook_command",
     "ProviderActivityEvidence",
@@ -50,12 +55,15 @@ __all__ = [
     "extract_req_id",
     "install_workspace_activity_hooks",
     "install_workspace_completion_hooks",
+    "is_reserved_req_id",
+    "iter_reserved_events",
     "latest_req_id_from_transcript",
     "load_activity",
     "load_event",
     "normalize_activity_state",
     "read_activity_evidence",
     "normalize_completion_status",
+    "reserved_req_id",
     "write_activity",
     "write_event",
 ]

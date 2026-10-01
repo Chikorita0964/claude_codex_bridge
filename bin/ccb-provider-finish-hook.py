@@ -11,7 +11,12 @@ script_dir = Path(__file__).resolve().parent
 lib_dir = script_dir.parent / 'lib'
 sys.path.insert(0, str(lib_dir))
 
-from provider_hooks.artifacts import current_turn_req_id_from_transcript, extract_req_id, write_event
+from provider_hooks.artifacts import (
+    current_turn_req_id_from_transcript,
+    extract_req_id,
+    reserved_req_id,
+    write_event,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -238,14 +243,23 @@ def _handle_claude(*, payload: dict, completion_dir: Path, agent_name: str, work
     event_name = str(payload.get('hook_event_name') or '').strip() or 'Stop'
     transcript_path = str(payload.get('transcript_path') or '').strip()
     reply = str(payload.get('last_assistant_message') or '')
+    session_id = str(payload.get('session_id') or '').strip() or None
     req_id = current_turn_req_id_from_transcript(transcript_path, assistant_reply=reply)
-    if not req_id:
-        return 0
+    reply_without_job = not req_id
+    if reply_without_job:
+        # A turn whose parent chain reaches no CCB_REQ_ID anchor can still end
+        # with an answer (a reply notice, a background wake-up, a gated turn).
+        # Keep it under a reserved session+timestamp id instead of dropping it;
+        # ccbd attaches it to the agent's active submission by session.
+        req_id = reserved_req_id(session_id)
     status = 'completed' if event_name == 'Stop' else 'failed'
     diagnostics = {
         'hook_event_name': event_name,
         'stop_hook_active': bool(payload.get('stop_hook_active', False)),
     }
+    if reply_without_job:
+        diagnostics['reply_without_job'] = True
+        diagnostics['reply_without_job_reason'] = 'turn_has_no_request_anchor'
     stalled_diagnostics = _claude_stalled_response_diagnostics(reply)
     if stalled_diagnostics is not None:
         status = 'failed'
@@ -261,7 +275,7 @@ def _handle_claude(*, payload: dict, completion_dir: Path, agent_name: str, work
         req_id=req_id,
         status=status,
         reply=reply,
-        session_id=str(payload.get('session_id') or '').strip() or None,
+        session_id=session_id,
         hook_event_name=event_name,
         transcript_path=transcript_path or None,
         diagnostics=diagnostics,
