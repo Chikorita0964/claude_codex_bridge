@@ -3,10 +3,21 @@ from __future__ import annotations
 from .options import normalize_expected_user_options, normalize_user_option_names, pane_matches_expected
 
 
+# Local patch (ccb-team-kit): a probe that times out is asked again with more time before it counts
+# as absence. Under build load a 0.5 s tmux call can time out for a pane that is alive; health
+# assessment reads that as pane-missing, and six in a row open the recovery circuit, which
+# blocks the agent's mailbox (2026-10-01: four live panes, messages held for three hours).
+PANE_EXISTS_TIMEOUTS = (0.5, 3.0)
+
+
 def pane_exists(service, pane_id: str) -> bool:
     if not service.looks_like_pane_id_fn(pane_id):
         return False
-    cp = run_tmux_capture(service, ["display-message", "-p", "-t", pane_id, "#{pane_id}"], timeout=0.5)
+    cp = None
+    for timeout in PANE_EXISTS_TIMEOUTS:
+        cp = run_tmux_capture(service, ["display-message", "-p", "-t", pane_id, "#{pane_id}"], timeout=timeout)
+        if cp is not None:
+            break
     if cp is None:
         return False
     return getattr(cp, "returncode", 1) == 0 and service.pane_exists_output_fn(getattr(cp, "stdout", "") or "")
