@@ -14,6 +14,10 @@ class Observation:
     state: str
     binding: str
     reason: str
+    # Local patch (ccb-team-kit): the visible composer text, so a caller can prove
+    # whether the box holds this job's own prompt before clearing or pasting.
+    # Empty when the provider never exposes contents (OMP) or the layout is unknown.
+    content: str = ''
 
 
 def _styled_lines(text: str) -> list[list[tuple[str, bool, bool]]]:
@@ -59,8 +63,8 @@ def inspect_screen(provider: str, screen: dict, *, binding: str) -> Observation:
     styled = _styled_lines(screen['text'])
     lines = [''.join(char for char, _, _ in line) for line in styled]
     cursor_x, cursor_y = screen['cursor_x'], screen['cursor_y']
-    def result(state, reason):
-        return Observation(state, binding, reason)
+    def result(state, reason, content=''):
+        return Observation(state, binding, reason, content)
     if provider == 'codex':
         arrows = [i for i, line in enumerate(lines) if line.startswith('›') and i <= cursor_y]
         if not arrows:
@@ -81,13 +85,14 @@ def inspect_screen(provider: str, screen: dict, *, binding: str) -> Observation:
         if _editor_mode_in_footer(lines[footer:]):
             return result('unknown', 'unsupported_editor_mode')
         content = lines[top][2:]
+        draft = '\n'.join([content, *lines[top+1:footer]])
         # Styled terminal rows may retain right-hand padding. This is still
         # the fixed placeholder at its initial cursor, not a typed draft.
         if content.rstrip(' ') == 'Ask Codex to do anything' and cursor_y == top and cursor_x == 2:
             if all(not line.strip() for line in lines[top+1:footer]):
                 return result('empty', 'codex_placeholder')
         if any(line.strip() for line in [content, *lines[top+1:footer]]) or cursor_y != top or cursor_x > 2:
-            return result('nonempty', 'codex_draft')
+            return result('nonempty', 'codex_draft', draft)
         return result('unknown', 'codex_no_placeholder')
     if provider != 'claude':
         return result('unknown', 'unsupported_provider')
@@ -105,12 +110,13 @@ def inspect_screen(provider: str, screen: dict, *, binding: str) -> Observation:
         return result('unknown', 'provider_busy')
     if _editor_mode_in_footer(lines[bottom+1:]):
         return result('unknown', 'unsupported_editor_mode')
+    draft = '\n'.join([lines[top+1][1:], *lines[top+2:bottom]]).strip()
     content = styled[top+1][2:] + [cell for row in styled[top+2:bottom] for cell in row]
     visible = [cell for cell in content if not cell[0].isspace()]
     if not visible:
         if bottom == top+2 and cursor_y == top+1 and cursor_x == 2:
             return result('empty', 'claude_blank')
-        return result('nonempty', 'claude_whitespace_draft')
+        return result('nonempty', 'claude_whitespace_draft', draft)
     # A virtual cursor may render the first ghost character in inverse video.
     # Require the rest to be dim, and at least one actual dim glyph.
     ghost = all(dim or (index == 0 and inverse) for index, (_, dim, inverse) in enumerate(visible))
@@ -118,7 +124,7 @@ def inspect_screen(provider: str, screen: dict, *, binding: str) -> Observation:
         if 'Press up to edit queued messages' in lines[top+1]:
             return result('unknown', 'provider_native_queue_pending')
         return result('empty', 'claude_ghost')
-    return result('nonempty', 'claude_draft')
+    return result('nonempty', 'claude_draft', draft)
 
 
 def _codex_footer(lines, styled, cursor_y: int) -> int | None:

@@ -18,14 +18,21 @@ def claude_screen(*, busy_row: str = '', draft: str = '') -> dict:
     return {'text': '\n'.join(lines), 'cursor_x': 2 + len(draft), 'cursor_y': 3, 'binding': 'pane'}
 
 
+OWN_ANCHOR = 'job-1'
+OWN_PROMPT = 'CCB_REQ_ID: job-1\n\nRun the verification and report back.'
+
+
 class Target:
     """Scripted readings; clear() must never be called in unattended mode."""
 
-    def __init__(self, state='nonempty', reason='claude_draft'):
+    provider = 'claude'
+
+    def __init__(self, state='nonempty', reason='claude_draft', content=''):
         self.state, self.reason, self.binding, self.clears = state, reason, 'pane-1', 0
+        self.content = content
 
     def observe(self):
-        return Observation(self.state, self.binding, self.reason)
+        return Observation(self.state, self.binding, self.reason, self.content)
 
     def clear(self, observation):
         self.clears += 1
@@ -54,7 +61,8 @@ def log_to_tmp(tmp_path, monkeypatch):
 
 
 def guard_at(now):
-    return DraftGuard(clock=lambda: now[0], unattended=True)
+    return DraftGuard(clock=lambda: now[0], unattended=True,
+                      job_anchor=OWN_ANCHOR, job_prompt=OWN_PROMPT)
 
 
 def test_default_stays_attended(monkeypatch):
@@ -70,7 +78,7 @@ def test_empty_sends_at_once():
 
 
 def test_nonempty_is_sent_after_the_grace_without_ctrl_c():
-    now, target = [0.0], Target()
+    now, target = [0.0], Target(content=OWN_PROMPT)  # the box holds this job's own prompt
     guard = guard_at(now)
     assert not guard.allows(target) and guard.reason == 'unattended_confirming'
     now[0] = UNATTENDED_GRACE_SECONDS - 0.1
@@ -80,8 +88,42 @@ def test_nonempty_is_sent_after_the_grace_without_ctrl_c():
     assert target.clears == 0
 
 
+def test_a_foreign_composer_is_never_pasted_over():
+    # A leftover prompt from another (e.g. cancelled) job: pasting on top merges two
+    # anchors into one user prompt, so the guard waits instead and marks it for the watch.
+    now, target = [0.0], Target(content='first task body for the cancelled job')
+    guard = guard_at(now)
+    for instant in (0, UNATTENDED_GRACE_SECONDS - 0.1):
+        now[0] = instant
+        assert not guard.allows(target)
+    now[0] = UNATTENDED_GRACE_SECONDS
+    assert not guard.allows(target) and guard.reason == 'draft_guard_foreign_text'
+    now[0] = STUCK_MARK_SECONDS
+    assert not guard.allows(target) and guard.reason == 'draft_guard_stuck:claude_draft'
+    assert target.clears == 0  # unattended mode never sends a clear key
+
+
+def test_own_prompt_tail_is_still_sent_after_the_grace():
+    now, target = [0.0], Target(content=OWN_PROMPT[-24:])
+    guard = guard_at(now)
+    assert not guard.allows(target) and guard.reason == 'unattended_confirming'
+    now[0] = UNATTENDED_GRACE_SECONDS
+    assert guard.allows(target) and guard.reason == 'unattended_send:claude_draft'
+
+
+def test_a_provider_that_hides_composer_text_keeps_the_grace_send():
+    # The OMP editor bridge never returns draft contents, so nothing can be claimed
+    # or refused there; the unattended grace send stays as it was.
+    now, target = [0.0], Target(content='')
+    target.provider = 'omp'
+    guard = guard_at(now)
+    assert not guard.allows(target)
+    now[0] = UNATTENDED_GRACE_SECONDS
+    assert guard.allows(target) and guard.reason == 'unattended_send:claude_draft'
+
+
 def test_unknown_does_not_restart_the_wait():
-    now, target = [0.0], Target()
+    now, target = [0.0], Target(content=OWN_PROMPT)
     guard = guard_at(now)
     assert not guard.allows(target)
     now[0], target.state, target.reason = 10, 'unknown', 'composer_layout_unknown'

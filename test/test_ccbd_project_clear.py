@@ -363,3 +363,55 @@ def test_project_clear_dsh_rotates_native_session_without_pane_input(monkeypatch
     ]
     assert calls == [session_file]
     assert backend.calls == []
+
+
+_BORDER = '─' * 40
+
+
+def _claude_composer_screen(draft: str = '') -> dict:
+    lines = ['● earlier output', _BORDER, '❯ ' + draft, _BORDER, '  ⏸ manual mode on']
+    return {'text': '\n'.join(lines), 'cursor_x': 2 + len(draft), 'cursor_y': 2,
+            'binding': 'pane', 'blocked': False}
+
+
+def test_project_clear_confirms_an_empty_composer(monkeypatch) -> None:
+    """A readable box that is empty confirms the reset; the readback is reported."""
+    backend = _FakeBackend(existing_panes={'%1'})
+    backend.capture_composer = lambda pane_id: _claude_composer_screen()
+    monkeypatch.setattr(project_clear, 'TmuxBackend', lambda *, socket_path: backend)
+    handler = build_project_clear_context_handler(
+        _app(
+            agents={'agent1': SimpleNamespace(provider='claude')},
+            runtimes={'agent1': SimpleNamespace(active_pane_id='%1')},
+        )
+    )
+
+    payload = handler({'agent_names': ['agent1']})
+
+    assert payload['results'] == [
+        {'agent': 'agent1', 'status': 'cleared', 'pane_id': '%1', 'command': '/clear',
+         'confirmed': 'input_delivered', 'composer_empty': True},
+    ]
+
+
+def test_project_clear_reports_a_composer_that_still_holds_text(monkeypatch) -> None:
+    """Input delivery is not a cleared box: a leftover prompt must not read as success."""
+    backend = _FakeBackend(existing_panes={'%1'})
+    backend.capture_composer = lambda pane_id: _claude_composer_screen('leftover prompt text')
+    monkeypatch.setattr(project_clear, 'TmuxBackend', lambda *, socket_path: backend)
+    monkeypatch.setattr(project_clear, 'COMPOSER_READBACK_DELAY_S', 0.0)
+    handler = build_project_clear_context_handler(
+        _app(
+            agents={'agent1': SimpleNamespace(provider='claude')},
+            runtimes={'agent1': SimpleNamespace(active_pane_id='%1')},
+        )
+    )
+
+    payload = handler({'agent_names': ['agent1']})
+
+    assert payload['results'] == [
+        {'agent': 'agent1', 'status': 'cleared', 'pane_id': '%1', 'command': '/clear',
+         'confirmed': 'composer_not_empty', 'composer_empty': False,
+         'reason': 'composer_still_holds_text'},
+    ]
+    assert ('send-keys', '-t', '%1', '-l', '/clear') in backend.calls

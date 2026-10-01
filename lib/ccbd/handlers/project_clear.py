@@ -8,6 +8,11 @@ from agents.models import normalize_agent_name
 from terminal_runtime import TmuxBackend
 
 OPENCODE_CLEAR_SUBMIT_DELAY_S = 0.3
+# Local patch (ccb-team-kit): a clear key sequence has no readback, so a leftover
+# prompt survives "cleared" and merges with the next job's paste. Re-read the box
+# (a few times: the provider repaints asynchronously) and report what it holds.
+COMPOSER_READBACK_ATTEMPTS = 3
+COMPOSER_READBACK_DELAY_S = 0.2
 DEFAULT_CLEAR_COMMAND = '/clear'
 CLEAR_COMMANDS: dict[str, str] = {
     # Pi starts a fresh context with /new; it does not expose /clear.
@@ -143,7 +148,18 @@ def _clear_agent_context(app, *, backend, agent_name: str) -> dict[str, object]:
             'reason': str(exc)[:200],
             'pane_id': pane_id,
         }
-    return {
+    composer_empty = _read_composer_empty(backend, pane_id=pane_id, provider=provider)
+    if composer_empty is False:
+        return {
+            'agent': agent_name,
+            'status': 'cleared',
+            'pane_id': pane_id,
+            'command': command,
+            'confirmed': 'composer_not_empty',
+            'composer_empty': False,
+            'reason': 'composer_still_holds_text',
+        }
+    result: dict[str, object] = {
         'agent': agent_name,
         'status': 'cleared',
         'pane_id': pane_id,
@@ -152,6 +168,37 @@ def _clear_agent_context(app, *, backend, agent_name: str) -> dict[str, object]:
         # the reset itself is not observable over tmux keys.
         'confirmed': 'input_delivered',
     }
+    if composer_empty is True:
+        result['composer_empty'] = True
+    return result
+
+
+def _read_composer_empty(backend, *, pane_id: str, provider: str) -> bool | None:
+    """Read the composer after the clear keys; None when the pane cannot be read.
+
+    A nonempty reading is retried a few times before it is reported: the provider
+    repaints the box asynchronously after receiving the clear command.
+    """
+    if not callable(getattr(backend, 'capture_composer', None)):
+        return None
+    from provider_execution.draft_observation import inspect_screen
+    for attempt in range(COMPOSER_READBACK_ATTEMPTS):
+        try:
+            screen = backend.capture_composer(pane_id)
+            if not isinstance(screen, dict) or screen.get('blocked'):
+                return None
+            state = inspect_screen(
+                provider, screen, binding=str(screen.get('binding') or pane_id),
+            ).state
+        except Exception:
+            return None
+        if state == 'empty':
+            return True
+        if state != 'nonempty':
+            return None
+        if attempt + 1 < COMPOSER_READBACK_ATTEMPTS:
+            time.sleep(COMPOSER_READBACK_DELAY_S)
+    return False
 
 
 def _clear_busy_gate(app, *, agent_name: str) -> dict[str, object] | None:

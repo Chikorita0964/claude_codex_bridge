@@ -212,6 +212,152 @@ def test_cancel_unsent_job_does_not_touch_user_draft():
     assert not calls and not backend.keys
 
 
+BORDER = '─' * 40
+
+
+def claude_pane_screen(draft: str) -> dict:
+    """A minimal Claude pane with ``draft`` in the composer box."""
+    lines = ['● earlier output', BORDER, '❯ ' + draft, BORDER, '  ⏸ manual mode on']
+    return {'text': '\n'.join(lines), 'cursor_x': 2 + len(draft), 'cursor_y': 2,
+            'binding': 'pane', 'blocked': False}
+
+
+class LeftoverComposerBackend:
+    """A Claude pane whose composer keeps the cancelled prompt the blind interrupt missed.
+
+    The incident: the interrupt's C-c/Escape/C-u sequence has no readback, so the
+    cancelled job's prompt was still in the box 41 s later and the next paste merged
+    with it. Only an explicit clear that follows a fresh readback (the fix's loop)
+    takes it away, so this backend clears on its second C-c.
+    """
+
+    def __init__(self, draft: str) -> None:
+        self.draft = draft
+        self.keys: list[str] = []
+        self.sent: list[str] = []
+        self._c_presses = 0
+
+    def capture_composer(self, pane_id: str) -> dict:
+        return claude_pane_screen(self.draft)
+
+    def send_key(self, pane_id, key: str) -> bool:
+        self.keys.append(key)
+        if key == 'C-c':
+            self._c_presses += 1
+            if self._c_presses >= 2:
+                self.draft = ''
+        return True
+
+    def send_text_to_pane(self, pane_id, text: str) -> None:
+        self.sent.append(text)
+        self.draft = self.draft + text  # a paste lands on top of whatever is there
+
+
+def _cancelled_submission(backend, *, prompt: str, anchor: str):
+    return _submission('claude', {'mode': 'active', 'backend': backend, 'pane_id': '%1',
+                                  'draft_guard_enabled': True, 'prompt_sent': True,
+                                  'prompt_text': prompt, 'request_anchor': anchor})
+
+
+class ScriptedClearTarget:
+    """A composer that only reads empty after ``clears_needed`` clear keys."""
+
+    provider = 'claude'
+
+    def __init__(self, content: str, clears_needed: int) -> None:
+        self.content = content
+        self.clears_needed = clears_needed
+        self.clears = 0
+
+    def observe(self):
+        return Observation('nonempty' if self.content else 'empty', 'pane-1', 'claude_draft',
+                           self.content)
+
+    def clear(self, observation):
+        self.clears += 1
+        if self.clears >= self.clears_needed:
+            self.content = ''
+
+
+def test_only_this_jobs_text_is_claimed():
+    from provider_execution.draft_guard import composer_text_is_this_jobs
+    prompt = 'CCB_REQ_ID: job-1\n\nbody text of the task'
+    assert composer_text_is_this_jobs('CCB_REQ_ID: job-1', prompt_text=prompt, anchor='job-1')
+    assert composer_text_is_this_jobs(prompt[-24:], prompt_text=prompt, anchor='job-1')
+    assert not composer_text_is_this_jobs('a sentence a human typed', prompt_text=prompt, anchor='job-1')
+    assert not composer_text_is_this_jobs('CCB_REQ_ID: job-2', prompt_text=prompt, anchor='job-1')
+
+
+def test_clear_residual_repeats_until_the_composer_reads_empty():
+    from provider_execution.draft_guard import clear_residual_composer
+    prompt = 'CCB_REQ_ID: job-1\n\nbody text of the task'
+    target = ScriptedClearTarget(prompt, clears_needed=2)
+    result = clear_residual_composer(target, prompt_text=prompt, anchor='job-1')
+    assert result.status == 'cleared' and result.clears == 2 and result.composer_empty
+
+
+def test_clear_residual_gives_up_after_the_bounded_attempts():
+    from provider_execution.draft_guard import COMPOSER_CLEAR_ATTEMPTS, clear_residual_composer
+    prompt = 'CCB_REQ_ID: job-1\n\nbody text of the task'
+    target = ScriptedClearTarget(prompt, clears_needed=99)
+    result = clear_residual_composer(target, prompt_text=prompt, anchor='job-1')
+    assert result.clears == COMPOSER_CLEAR_ATTEMPTS
+    assert result.status == 'unconfirmed' and not result.composer_empty
+
+
+def test_cancel_reads_back_and_clears_the_prompt_it_typed():
+    from provider_execution.service import _cancel_submission
+    prompt = 'CCB_REQ_ID: job_a\n\nfirst task body for the cancelled job'
+    backend = LeftoverComposerBackend('first task body for the cancelled job')
+    result = _cancel_submission(SimpleNamespace(cancel=lambda s: None),
+                                _cancelled_submission(backend, prompt=prompt, anchor='job_a'))
+    assert result == {'composer_empty': True, 'composer_clear_status': 'cleared',
+                      'composer_clear_attempts': 1, 'composer_clear_reason': 'claude_blank'}
+    assert backend.draft == ''
+    assert backend.keys.count('C-c') == 2  # the blind interrupt, then the readback's clear
+
+
+def test_cancel_leaves_a_foreign_draft_alone():
+    from provider_execution.service import _cancel_submission
+    backend = LeftoverComposerBackend('a sentence a human typed, not CCB output')
+    result = _cancel_submission(SimpleNamespace(cancel=lambda s: None),
+                                _cancelled_submission(backend, prompt='CCB_REQ_ID: job_a\n\nbody',
+                                                      anchor='job_a'))
+    assert result['composer_empty'] is False
+    assert result['composer_clear_status'] == 'foreign_text'
+    assert backend.draft == 'a sentence a human typed, not CCB output'  # left for its owner
+
+
+def test_the_next_job_is_never_pasted_onto_a_cancelled_prompt(monkeypatch):
+    """End to end: after a cancel, two jobs never share one user prompt."""
+    from provider_execution.service import _cancel_submission
+    from provider_execution.draft_guard import DraftGuard
+    monkeypatch.setenv('CCB_DRAFT_GUARD_UNATTENDED', '1')
+    prompt_a = 'CCB_REQ_ID: job_a\n\nfirst task body for the cancelled job'
+    prompt_b = 'CCB_REQ_ID: job_b\n\nsecond task body'
+    backend = LeftoverComposerBackend('first task body for the cancelled job')
+
+    _cancel_submission(SimpleNamespace(cancel=lambda s: None),
+                       _cancelled_submission(backend, prompt=prompt_a, anchor='job_a'))
+    assert backend.draft == ''  # without the readback the leftover stays for the next paste
+
+    reader = SimpleNamespace(capture_state=lambda: {'cursor': 'fresh'})
+    state_b = {'mode': 'active', 'backend': backend, 'pane_id': '%1', 'reader': reader,
+               'draft_guard_enabled': True, 'prompt_sent': False,
+               'pending_prompt': prompt_b, 'prompt_text': prompt_b, 'request_anchor': 'job_b',
+               # the unattended grace has elapsed: without a clear the paste merges on top
+               '_draft_guard': DraftGuard(clock=lambda: 100.0, unattended=True, blocked_since=0.0)}
+    from provider_backends.claude.execution_runtime.polling import _dispatch_deferred_prompt
+    prepared = SimpleNamespace(backend=backend, pane_id='%1', reader=reader)
+    sent = _dispatch_deferred_prompt(_submission('claude', state_b), prepared=prepared,
+                                     now='2026-09-20T00:00:01Z')
+
+    assert sent.runtime_state['prompt_sent'] is True
+    assert backend.sent == [prompt_b]
+    assert backend.draft == prompt_b  # exactly one job's text in the box
+    assert 'cancelled job' not in backend.draft
+
+
 @pytest.mark.parametrize('provider', ['codex', 'claude', 'omp'])
 def test_persistence_drops_timer_and_preserves_unsent_guard(tmp_path, provider):
     from provider_execution.service_runtime.persistence import persist_submission

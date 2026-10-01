@@ -55,7 +55,10 @@ class ExecutionService(ExecutionServiceStateMixin):
     def draft_allows_start(self, job, *, runtime_context) -> bool:
         from .draft_guard import DraftGuard, resolve_job_target
         previous = self._draft_guards.get(job.agent_name)
-        guard = previous[1] if previous and previous[0] == job.job_id else DraftGuard()
+        # Local patch: the pre-claim wait may stop on a composer that already holds this
+        # job's own anchor (a resume), but never on another job's leftover text.
+        guard = previous[1] if previous and previous[0] == job.job_id else DraftGuard(
+            job_anchor=str(getattr(job, 'job_id', '') or ''))
         self._draft_guards[job.agent_name] = (job.job_id, guard)
         try:
             target = resolve_job_target(job, runtime_context)
@@ -114,7 +117,7 @@ class ExecutionService(ExecutionServiceStateMixin):
         _cancel_submission(adapter, submission)
         return None
 
-    def cancel(self, job_id: str) -> None:
+    def cancel(self, job_id: str) -> dict[str, object] | None:
         with self._active_transition_lock:
             self._starting.pop(job_id, None)
             submission = self._active.pop(job_id, None)
@@ -124,7 +127,8 @@ class ExecutionService(ExecutionServiceStateMixin):
                 self._state_store.remove(job_id)
         if submission is not None:
             adapter = self._registry.get(submission.provider)
-            _cancel_submission(adapter, submission)
+            return _cancel_submission(adapter, submission)
+        return None
 
     def capture_cancel_evidence(self, job_id: str) -> CompletionDecision | None:
         """Best-effort provider evidence capture before destructive cancellation."""
@@ -300,13 +304,38 @@ def _complete_herdr_pane_ref(value: object) -> bool:
     )
 
 
-def _cancel_submission(adapter, submission: ProviderSubmission) -> None:
+def _cancel_submission(adapter, submission: ProviderSubmission) -> dict[str, object] | None:
     if submission.runtime_state.get('draft_guard_enabled') and submission.runtime_state.get('prompt_sent') is False:
-        return  # This job owns no provider turn or composer content yet.
+        return None  # This job owns no provider turn or composer content yet.
     provider_cancel = getattr(adapter, 'cancel', None) if adapter is not None else None
     if callable(provider_cancel):
         provider_cancel(submission)
     interrupt_active_submission(submission)
+    return clear_composer_after_interrupt(submission)
+
+
+def clear_composer_after_interrupt(submission: ProviderSubmission) -> dict[str, object] | None:
+    """Local patch: take back the prompt text an interrupt may have left in the composer.
+
+    The blind C-c/Escape/C-u interrupt has no readback, and a leftover prompt makes the
+    next job's paste land under a stale anchor (one user prompt, two jobs). Capture the
+    same guard target the send path uses and clear only text provably this job's; a
+    foreign draft or another job's residue is left for its owner and reported back.
+    """
+    from .draft_guard import clear_residual_composer, guarded_backend, target_for_state
+    state = submission.runtime_state
+    if not state.get('draft_guard_enabled') or not guarded_backend(state.get('backend')):
+        return None
+    try:
+        target = target_for_state(submission.provider, state)
+        result = clear_residual_composer(
+            target,
+            prompt_text=state.get('prompt_text') or state.get('pending_prompt') or '',
+            anchor=state.get('request_anchor') or state.get('req_id') or '',
+        )
+    except Exception:
+        return None
+    return result.diagnostics()
 
 
 __all__ = ["ExecutionRestoreResult", "ExecutionService", "ExecutionUpdate"]

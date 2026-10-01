@@ -16,7 +16,8 @@ def _guarded_dispatcher(tmp_path, monkeypatch):
     now = [0.0]
     target = Target()
     cls = draft_guard.DraftGuard
-    monkeypatch.setattr(draft_guard, 'DraftGuard', lambda: cls(clock=lambda: now[0]))
+    monkeypatch.setattr(draft_guard, 'DraftGuard',
+                        lambda **kwargs: cls(clock=lambda: now[0], **kwargs))
     monkeypatch.setattr(draft_guard, 'resolve_job_target', lambda job, context: target if job.agent_name=='codex' else None)
     execution = HoldingExecutionService()
     execution._draft_guards = {}

@@ -55,6 +55,28 @@ def test_cancel_writes_flag_file_for_agent(tmp_path: Path) -> None:
     assert dispatcher.get(job_id).status.value == "cancelled"
 
 
+def test_cancel_records_the_composer_readback_in_the_decision(tmp_path: Path) -> None:
+    """Local patch: the cancel decision carries what the composer held afterwards."""
+    from types import SimpleNamespace
+
+    ctx, _, dispatcher = _make_dispatcher(tmp_path)
+    job_id = _submit(dispatcher, ctx, "task body").jobs[0].job_id
+    cleared: list[str] = []
+    dispatcher._execution_service = SimpleNamespace(
+        cancel=lambda job: cleared.append(job) or {
+            'composer_empty': False, 'composer_clear_status': 'foreign_text',
+            'composer_clear_attempts': 0, 'composer_clear_reason': 'claude_draft',
+        }
+    )
+
+    dispatcher.cancel(job_id)
+
+    assert cleared == [job_id]
+    diagnostics = dispatcher.get(job_id).terminal_decision['diagnostics']
+    assert diagnostics['composer_empty'] is False
+    assert diagnostics['composer_clear_status'] == 'foreign_text'
+
+
 def test_write_and_cleanup_cancel_flags(tmp_path: Path) -> None:
     ctx, layout, _ = _make_dispatcher(tmp_path)
     import os

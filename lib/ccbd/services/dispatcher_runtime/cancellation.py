@@ -37,8 +37,11 @@ def cancel_job(dispatcher, job_id: str, *, record_reply: bool = True) -> CancelR
         if record_reply
         else None
     )
-    if dispatcher._execution_service is not None:
-        dispatcher._execution_service.cancel(job_id)
+    composer_clear = (
+        _cancel_and_clear_composer(dispatcher, job_id)
+        if dispatcher._execution_service is not None
+        else None
+    )
 
     snapshot = dispatcher._snapshot_writer.load(job_id)
     snapshot_reply = str(
@@ -53,6 +56,7 @@ def cancel_job(dispatcher, job_id: str, *, record_reply: bool = True) -> CancelR
         snapshot,
         record_reply=record_reply,
         cancel_evidence=cancel_evidence,
+        composer_clear=composer_clear,
     )
 
 
@@ -65,8 +69,9 @@ def cancel_with_decision(
     *,
     record_reply: bool = True,
     cancel_evidence: CompletionDecision | None = None,
+    composer_clear: dict[str, object] | None = None,
 ) -> CancelReceipt:
-    diagnostics = _cancel_diagnostics(cancel_evidence)
+    diagnostics = _cancel_diagnostics(cancel_evidence, composer_clear)
     decision = CompletionDecision(
         terminal=True,
         status=CompletionStatus.CANCELLED,
@@ -171,8 +176,23 @@ def _capture_cancel_evidence(dispatcher, job_id: str) -> CompletionDecision | No
     return evidence
 
 
-def _cancel_diagnostics(cancel_evidence: CompletionDecision | None) -> dict[str, object]:
+def _cancel_and_clear_composer(dispatcher, job_id: str) -> dict[str, object] | None:
+    """Local patch: cancel the running submission and report what the composer held.
+
+    The execution service clears text the interrupted job left in the composer and
+    returns the readback evidence; a provider without a draft guard simply cancels.
+    """
+    result = dispatcher._execution_service.cancel(job_id)
+    return dict(result) if isinstance(result, dict) and result else None
+
+
+def _cancel_diagnostics(
+    cancel_evidence: CompletionDecision | None,
+    composer_clear: dict[str, object] | None = None,
+) -> dict[str, object]:
     diagnostics: dict[str, object] = {'cancel_requested': True}
+    if composer_clear:
+        diagnostics.update(composer_clear)
     if cancel_evidence is None:
         return diagnostics
     evidence_diagnostics = dict(cancel_evidence.diagnostics or {})

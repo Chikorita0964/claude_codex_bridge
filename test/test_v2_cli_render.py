@@ -118,6 +118,26 @@ def test_render_clear_includes_agent_results_and_confirmation_scope() -> None:
     )
 
 
+def test_render_clear_reports_a_composer_readback() -> None:
+    assert render_clear(
+        {
+            'status': 'ok',
+            'results': [
+                {'agent': 'agent1', 'status': 'cleared', 'pane_id': '%1',
+                 'confirmed': 'composer_not_empty', 'composer_empty': False,
+                 'reason': 'composer_still_holds_text'},
+            ],
+        }
+    ) == (
+        'clear_status: ok',
+        'cleared_count: 1',
+        'skipped_count: 0',
+        'failed_count: 0',
+        'clear_agent: agent=agent1 status=cleared pane_id=%1 '
+        'reason=composer_still_holds_text confirmed=composer_not_empty composer_empty=false',
+    )
+
+
 def test_render_clear_without_confirmed_field_keeps_existing_shape() -> None:
     assert render_clear(
         {

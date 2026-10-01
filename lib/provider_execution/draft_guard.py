@@ -25,6 +25,17 @@ WAIT_SECONDS = 180.0
 UNATTENDED_GRACE_SECONDS = 30.0
 STALE_BUSY_SECONDS = 300.0
 STUCK_MARK_SECONDS = 300.0
+
+# Local patch (ccb-team-kit): a cancel or interrupt leaves the prompt CCB typed in the
+# composer (the blind C-c/Escape/C-u sequence has no readback), and the next paste lands
+# on top of it, merging two anchors into one user prompt. After an interrupt the guard
+# target is captured and cleared until the box reads empty or its text is provably not
+# this job's. The OMP editor bridge never exposes draft contents, so there the residue
+# cannot be attributed and is left alone.
+COMPOSER_CLEAR_ATTEMPTS = 3
+MIN_OWN_TEXT_CHARS = 12
+OWN_TEXT_TAIL_CHARS = 24
+CONTENT_READABLE_PROVIDERS = frozenset({'claude', 'codex'})
 _BUSY_ROW = re.compile(r'^[✢✳✶✻✽·]\s+.*(?:…|\.\.\.)')
 _ANSI_ANY = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
@@ -34,6 +45,107 @@ def _unattended_env() -> bool:
 
 
 _LAST_RECORD: dict = {}
+
+
+def _normalized(text: object) -> str:
+    return re.sub(r'\s+', ' ', str(text or '')).strip()
+
+
+def composer_text_is_this_jobs(content: object, *, prompt_text: object = '', anchor: object = '') -> bool:
+    """True only when the visible composer text is provably what this job typed.
+
+    The wrapped prompt starts with ``CCB_REQ_ID: <job>``; a shorter reading counts
+    when it is a fragment of the job's prompt, or when the prompt's visible tail is
+    present (a long paste shows its end where the cursor sits). Anything else may be
+    a human draft and must not be cleared or typed over.
+    """
+    text = _normalized(content)
+    if not text:
+        return False
+    anchor_text = str(anchor or '').strip()
+    if anchor_text and re.search(
+            rf'CCB_REQ_ID:\s*{re.escape(anchor_text)}(?=\s|$)', text):
+        return True
+    prompt = _normalized(prompt_text)
+    if len(prompt) < MIN_OWN_TEXT_CHARS:
+        return False
+    if len(text) >= MIN_OWN_TEXT_CHARS and text in prompt:
+        return True
+    tail = prompt[-OWN_TEXT_TAIL_CHARS:]
+    return len(tail) >= MIN_OWN_TEXT_CHARS and tail in text
+
+
+def composer_holds_job_text(provider: object, observation: Observation, *,
+                            prompt_text: object = '', anchor: object = '') -> bool | None:
+    """True/False when the provider exposes composer text; None when it never does."""
+    if str(provider or '') not in CONTENT_READABLE_PROVIDERS:
+        return None
+    return composer_text_is_this_jobs(observation.content, prompt_text=prompt_text, anchor=anchor)
+
+
+@dataclass(frozen=True)
+class ComposerClearResult:
+    """Outcome of taking back the composer text CCB typed for a cancelled job."""
+
+    status: str
+    clears: int = 0
+    reason: str = ''
+
+    @property
+    def composer_empty(self) -> bool:
+        return self.status in {'empty', 'cleared'}
+
+    def diagnostics(self) -> dict:
+        return {'composer_empty': self.composer_empty,
+                'composer_clear_status': self.status,
+                'composer_clear_attempts': self.clears,
+                'composer_clear_reason': self.reason}
+
+
+def clear_residual_composer(target, *, prompt_text: object = '', anchor: object = '',
+                            attempts: int = COMPOSER_CLEAR_ATTEMPTS) -> ComposerClearResult:
+    """Local patch: read the composer and clear what this job left there.
+
+    Reads through the same ``DraftTarget`` the send guard uses, clears (C-c for the
+    tmux providers), then re-reads, repeating until the box reads empty or its text is
+    provably not this job's. Never sends a clear key on a reading it cannot claim.
+    """
+    provider = str(getattr(target, 'provider', '') or '')
+    if provider not in CONTENT_READABLE_PROVIDERS:
+        return ComposerClearResult('unverifiable', reason='composer_text_not_exposed')
+    if not str(prompt_text or '').strip() and not str(anchor or '').strip():
+        return ComposerClearResult('unverifiable', reason='missing_prompt_binding')
+    clears = 0
+    for _ in range(max(1, int(attempts))):
+        observation = _observe_composer(target)
+        if observation is None:
+            return ComposerClearResult('unavailable', clears=clears, reason='composer_capture_failed')
+        if observation.state == 'empty':
+            return ComposerClearResult('cleared' if clears else 'empty', clears=clears,
+                                       reason=observation.reason)
+        if observation.state != 'nonempty':
+            return ComposerClearResult('unavailable', clears=clears, reason=observation.reason)
+        if not composer_text_is_this_jobs(observation.content, prompt_text=prompt_text, anchor=anchor):
+            return ComposerClearResult('foreign_text', clears=clears, reason=observation.reason)
+        try:
+            target.clear(observation)
+        except Exception:
+            return ComposerClearResult('clear_failed', clears=clears, reason='clear_key_failed')
+        clears += 1
+    observation = _observe_composer(target)
+    if observation is not None and observation.state == 'empty':
+        return ComposerClearResult('cleared', clears=clears, reason=observation.reason)
+    return ComposerClearResult(
+        'unconfirmed', clears=clears,
+        reason=observation.reason if observation is not None else 'composer_capture_failed')
+
+
+def _observe_composer(target) -> Observation | None:
+    try:
+        observation = target.observe()
+    except Exception:
+        return None
+    return observation if isinstance(observation, Observation) else None
 
 
 def record_observation(target, observation: Observation) -> None:
@@ -75,6 +187,9 @@ class DraftGuard:
     blocked_since: float | None = None
     busy_row: str = ''
     busy_since: float | None = None
+    # Local patch: what this job typed, so a nonempty reading can be claimed or refused.
+    job_anchor: str = ''
+    job_prompt: str = ''
 
     def reset(self, reason: str) -> None:
         self.since = None
@@ -164,11 +279,20 @@ class DraftGuard:
             self.reason = observation.reason
             return True
         if observation.state == 'nonempty':
-            if waited >= UNATTENDED_GRACE_SECONDS:
+            # Local patch: paste on top only when the reading is provably this job's text
+            # (its anchor or prompt tail) or the provider never exposes contents (OMP).
+            # A leftover from a cancelled job must never be merged with the new prompt.
+            own = composer_holds_job_text(getattr(target, 'provider', ''), observation,
+                                          prompt_text=self.job_prompt, anchor=self.job_anchor)
+            if own is not False and waited >= UNATTENDED_GRACE_SECONDS:
                 self.blocked_since = None
                 self.reason = f'unattended_send:{observation.reason}'
                 return True
-            self.reason = 'unattended_confirming'
+            if own is not False:
+                self.reason = 'unattended_confirming'
+                return False
+            self.reason = (f'draft_guard_stuck:{observation.reason}'
+                           if waited >= STUCK_MARK_SECONDS else 'draft_guard_foreign_text')
             return False
         self.reason = (f'draft_guard_stuck:{observation.reason}' if waited >= STUCK_MARK_SECONDS
                        else observation.reason)
@@ -274,6 +398,9 @@ def allow_submission_send(provider: str, state: dict) -> bool:
     if not isinstance(guard, DraftGuard):
         guard = DraftGuard()
         state['_draft_guard'] = guard
+    # Local patch: bind the job's own text so a nonempty composer can be claimed as ours.
+    guard.job_anchor = str(state.get('request_anchor') or state.get('req_id') or '')
+    guard.job_prompt = str(state.get('prompt_text') or state.get('pending_prompt') or '')
     allowed = guard.allows(target_for_state(provider, state))
     state['draft_guard_pending'] = not allowed
     state['draft_guard_reason'] = guard.reason

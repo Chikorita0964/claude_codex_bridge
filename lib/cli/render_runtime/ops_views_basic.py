@@ -633,6 +633,9 @@ def render_clear(summary) -> tuple[str, ...]:
             # means the clear keys reached a live pane, not a provider-native
             # confirmed context reset.
             detail += f' confirmed={confirmed}'
+        if 'composer_empty' in item:
+            # Local patch: the readback of the composer box after the clear keys.
+            detail += f' composer_empty={str(bool(item.get("composer_empty"))).lower()}'
         lines.append(f'clear_agent: {detail}')
     return tuple(lines)
 
