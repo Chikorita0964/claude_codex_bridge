@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import is_tmux_query_unknown
+
 from ccbd.services.project_namespace_pane import backend_socket_matches, inspect_project_namespace_pane, same_tmux_socket_path
 
 
-def pane_outside_project_namespace(*, runtime, namespace_state_store, backend, pane_id: str) -> bool:
+def pane_outside_project_namespace(*, runtime, namespace_state_store, backend, pane_id: str) -> bool | None:
+    """True outside, False inside, None when the namespace probe did not answer."""
     pane_text = _normalized_tmux_pane_id(pane_id)
     if pane_text is None or backend is None or namespace_state_store is None:
         return False
@@ -37,7 +40,11 @@ def _runtime_socket_matches_namespace(runtime, tmux_socket_path: str | None) -> 
     return bool(runtime_socket) and same_tmux_socket_path(runtime_socket, tmux_socket_path)
 
 
-def _record_outside_namespace(runtime, namespace_state, record) -> bool:
+def _record_outside_namespace(runtime, namespace_state, record) -> bool | None:
+    if is_tmux_query_unknown(record):
+        # Local patch (ccb-team-kit): a probe that did not answer is not "outside the namespace";
+        # unknown must not change the stored health (2026-09-27..10-01: live panes marked foreign).
+        return None
     if record is None:
         return True
     slot_key = str(getattr(runtime, 'slot_key', None) or getattr(runtime, 'agent_name', None) or '').strip() or None

@@ -1,4 +1,4 @@
-"""Local patch (ccb-team-kit): a pane probe that times out is retried with more time."""
+"""Local patch (ccb-team-kit): a pane probe that times out is retried with more time, then unknown."""
 import subprocess
 from types import SimpleNamespace
 
@@ -38,7 +38,8 @@ def test_a_pane_tmux_does_not_know_is_absent_without_a_retry():
     assert calls == [0.5]
 
 
-def test_two_timeouts_still_count_as_absent():
+def test_two_timeouts_are_unknown_not_absent():
+    # Local patch (ccb-team-kit): a probe that never answered is not an answer of "no".
     svc, calls = _service(["timeout", "timeout"])
-    assert queries.pane_exists(svc, "%5") is False
+    assert queries.pane_exists(svc, "%5") is queries.TMUX_QUERY_UNKNOWN
     assert calls == [0.5, 3.0]

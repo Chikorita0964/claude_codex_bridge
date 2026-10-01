@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import is_tmux_query_unknown
+
 _PANE_RUNTIME_BACKENDS = frozenset({'tmux', 'mux', 'rmux', 'psmux', 'herdr'})
 
 
@@ -71,7 +73,8 @@ def matching_project_namespace_record(
     else:
         backend = tmux_backend_for_factory(tmux_backend_factory, socket_path=tmux_socket_path)
         record = inspect_project_namespace_pane_fn(backend, pane_id)
-    if record is None:
+    if record is None or is_tmux_query_unknown(record):
+        # A probe that timed out proves nothing about the binding; it is not a record.
         return None
     if not record.matches(
         tmux_session_name=session_name,

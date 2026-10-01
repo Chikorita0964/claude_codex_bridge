@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 from ccbd.services.health_assessment.tmux_runtime.namespace import pane_outside_project_namespace
@@ -26,6 +27,31 @@ def test_pane_outside_namespace_accepts_runtime_socket_fallback(monkeypatch) -> 
         backend=object(),
         pane_id='%3',
     ) is True
+
+
+def test_pane_outside_namespace_is_unknown_when_both_describes_time_out() -> None:
+    # Local patch (ccb-team-kit): a probe that did not answer is not "outside the namespace";
+    # unknown leaves the stored health alone instead of starting a recovery for a live pane.
+    runtime = SimpleNamespace(project_id='proj-1', agent_name='agent1', tmux_socket_path='/tmp/ccb.sock')
+    namespace_store = SimpleNamespace(
+        load=lambda: SimpleNamespace(tmux_socket_path='/tmp/ccb.sock', tmux_session_name='sess-1')
+    )
+
+    class TimedOutBackend:
+        _socket_path = '/tmp/ccb.sock'
+
+        def _tmux_run(self, *args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get('timeout'))
+
+        def describe_pane(self, *args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get('timeout'))
+
+    assert pane_outside_project_namespace(
+        runtime=runtime,
+        namespace_state_store=namespace_store,
+        backend=TimedOutBackend(),
+        pane_id='%3',
+    ) is None
 
 
 def test_pane_outside_namespace_checks_project_namespace_record(monkeypatch) -> None:

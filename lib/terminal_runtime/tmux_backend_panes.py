@@ -4,7 +4,7 @@ from typing import Optional
 
 from terminal_runtime.tmux import looks_like_pane_id as _looks_like_pane_id_impl
 from terminal_runtime.tmux import looks_like_tmux_target as _looks_like_tmux_target_impl
-from terminal_runtime.tmux_panes import TmuxPaneService
+from terminal_runtime.tmux_panes import TmuxPaneService, TmuxQueryUnknown
 from terminal_runtime.tmux_backend_runtime import (
     activate_tmux_pane as _activate_tmux_pane_impl,
     create_pane as _create_pane_impl,
@@ -30,7 +30,7 @@ class TmuxBackendPaneQueryMixin:
     def _pane_service(self) -> TmuxPaneService:
         return self._services.pane_service
 
-    def pane_exists(self, pane_id: str) -> bool:
+    def pane_exists(self, pane_id: str) -> bool | TmuxQueryUnknown:
         return self._services.pane_service.pane_exists(pane_id)
 
     def get_current_pane_id(self) -> str:
@@ -52,7 +52,7 @@ class TmuxBackendPaneQueryMixin:
         pane_id: str,
         *,
         user_options: tuple[str, ...] = (),
-    ) -> dict[str, str] | None:
+    ) -> dict[str, str] | TmuxQueryUnknown | None:
         return self._services.pane_service.describe_pane(
             pane_id,
             user_options=user_options,

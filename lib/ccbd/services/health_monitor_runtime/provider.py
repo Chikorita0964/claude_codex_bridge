@@ -11,6 +11,11 @@ def provider_pane_health(monitor, runtime) -> str | None:
     if assessment is None:
         return None
 
+    if assessment.health == 'unknown':
+        # Local patch (ccb-team-kit): a probe that did not answer is not a health fact. Keep the
+        # stored health and state instead of degrading a live runtime on a timed-out tmux call.
+        return runtime.health
+
     if assessment.session is None:
         updated = monitor._mark_degraded(runtime, health=assessment.health)
         return updated.health

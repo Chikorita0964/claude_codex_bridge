@@ -863,7 +863,8 @@ def _append_dynamic_event(
         for window in windows
     ]
     alive = {
-        name: backend.pane_exists(pane_id)
+        # bool(): a probe that timed out reports "unknown", which is not an answer of "alive".
+        name: bool(backend.pane_exists(pane_id))
         for name, pane_id in sorted(pane_by_name.items())
     }
     events.append(

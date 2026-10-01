@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 from ccbd.services.health_assessment.tmux_runtime.state import tmux_pane_state
@@ -19,6 +20,23 @@ def test_tmux_pane_state_returns_foreign_when_ownership_mismatches(monkeypatch) 
     )
 
     assert tmux_pane_state(object(), backend, "%1") == "foreign"
+
+
+def test_tmux_pane_state_returns_unknown_when_an_alive_probe_times_out(monkeypatch) -> None:
+    def timed_out(pane_id):
+        raise subprocess.TimeoutExpired(['tmux'], 0.5)
+
+    backend = SimpleNamespace(
+        pane_exists=lambda pane_id: True,
+        is_tmux_pane_alive=timed_out,
+        is_alive=timed_out,
+    )
+    monkeypatch.setattr(
+        "ccbd.services.health_assessment.tmux_runtime.state.inspect_tmux_pane_ownership",
+        lambda session, backend, pane_id: SimpleNamespace(is_owned=True, state="owned"),
+    )
+
+    assert tmux_pane_state(object(), backend, "%1") == "unknown"
 
 
 def test_tmux_pane_state_prefers_tmux_alive_method(monkeypatch) -> None:

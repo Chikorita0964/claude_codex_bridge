@@ -13,6 +13,7 @@ from agents.models import (
     parse_layout_spec,
 )
 from terminal_runtime.placeholders import pane_placeholder_cmd
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import is_tmux_query_unknown
 from terminal_runtime.tmux_theme import tmux_theme_profile
 from project_command_trust import require_project_command_approval
 from ccbd.services.project_namespace_pane import (
@@ -284,7 +285,8 @@ def topology_active_panes(
         resolved_records = {}
         for pane_id in dict.fromkeys(candidate_ids):
             record = inspect_project_namespace_pane(context.backend, pane_id)
-            if record is not None:
+            # A timed-out probe is no record; treating it as one hides the pane from topology.
+            if record is not None and not is_tmux_query_unknown(record):
                 resolved_records[pane_id] = record
     expected: list[dict[str, str]] = []
     if bool(getattr(topology_plan, 'sidebar_enabled', False)):
@@ -1177,7 +1179,7 @@ def _matching_pane_ids(
         candidates = pane_records.items()
     matches: list[str] = []
     for pane_id, record in candidates:
-        if record is None:
+        if record is None or is_tmux_query_unknown(record):
             continue
         if not record.matches_authoritative_topology(
             tmux_session_name=resolved_session,

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import (
+    TMUX_QUERY_UNKNOWN,
+    TmuxQueryUnknown,
+    is_tmux_query_unknown,
+)
 from terminal_runtime.tmux_readiness import (
     TmuxTransientServerUnavailable,
     is_tmux_transient_server_error_text,
@@ -152,13 +158,17 @@ class ProjectNamespacePaneRecord:
         return True
 
 
-def inspect_project_namespace_pane(backend, pane_id: str) -> ProjectNamespacePaneRecord | None:
+def inspect_project_namespace_pane(backend, pane_id: str) -> ProjectNamespacePaneRecord | TmuxQueryUnknown | None:
+    """Describe a pane; TMUX_QUERY_UNKNOWN when every probe timed out before answering."""
     pane_text = str(pane_id or '').strip()
     if not pane_text:
         return None
     details = _describe_pane_via_tmux(backend, pane_text) if pane_text.startswith('%') else None
-    if details is None:
+    if details is None or is_tmux_query_unknown(details):
+        # The second describe is a different probe (its own retries live in the pane service).
         details = _describe_pane_via_backend(backend, pane_text)
+    if is_tmux_query_unknown(details):
+        return TMUX_QUERY_UNKNOWN
     if details is None:
         return None
     return ProjectNamespacePaneRecord(
@@ -278,7 +288,7 @@ def backend_socket_matches(backend, tmux_socket_path: str) -> bool:
     return same_tmux_socket_path(backend_socket_path, tmux_socket_path)
 
 
-def _describe_pane_via_tmux(backend, pane_id: str) -> dict[str, str] | None:
+def _describe_pane_via_tmux(backend, pane_id: str) -> dict[str, str] | TmuxQueryUnknown | None:
     runner = getattr(backend, '_tmux_run', None)
     if not callable(runner):
         return None
@@ -319,6 +329,10 @@ def _describe_pane_via_tmux(backend, pane_id: str) -> dict[str, str] | None:
             check=False,
             timeout=0.5,
         )
+    except subprocess.TimeoutExpired:
+        # Local patch (ccb-team-kit): tmux did not answer, so this describe says nothing about
+        # namespace membership; the backend-describe fallback is a separate probe.
+        return TMUX_QUERY_UNKNOWN
     except Exception:
         return None
     if getattr(cp, 'returncode', 1) != 0:
@@ -444,7 +458,7 @@ def _decode_tmux_pane_description(line: str) -> dict[str, str] | None:
     return result
 
 
-def _describe_pane_via_backend(backend, pane_id: str) -> dict[str, str] | None:
+def _describe_pane_via_backend(backend, pane_id: str) -> dict[str, str] | TmuxQueryUnknown | None:
     descriptor = getattr(backend, 'describe_pane', None)
     if not callable(descriptor):
         return None
@@ -467,8 +481,12 @@ def _describe_pane_via_backend(backend, pane_id: str) -> dict[str, str] | None:
                 '@ccb_namespace_epoch',
             ),
         )
+    except subprocess.TimeoutExpired:
+        return TMUX_QUERY_UNKNOWN
     except Exception:
         return None
+    if is_tmux_query_unknown(described):
+        return described
     if not isinstance(described, dict):
         return None
     result = _stringify_details(described)

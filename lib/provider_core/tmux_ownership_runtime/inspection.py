@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
+
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import (
+    TMUX_QUERY_UNKNOWN,
+    is_tmux_query_unknown,
+)
 
 from .session import session_user_option_lookup
 
@@ -56,6 +62,15 @@ def inspect_described_pane(
     expected_items: tuple[tuple[str, str], ...],
 ) -> TmuxPaneOwnership | None:
     described = describe_pane(backend, pane_id, expected_items)
+    if is_tmux_query_unknown(described):
+        # Local patch (ccb-team-kit): a describe that did not answer says nothing about ownership;
+        # calling it "not owned" turned live panes into foreign panes and started recoveries.
+        return TmuxPaneOwnership(
+            state='unknown',
+            pane_id=pane_id,
+            expected_options=expected_items,
+            reason='describe-timeout',
+        )
     if not isinstance(described, dict):
         return None
     actual_title = str(described.get('pane_title') or '').strip() or None
@@ -91,6 +106,8 @@ def describe_pane(
         return None
     try:
         return descriptor(pane_id, user_options=tuple(name for name, _ in expected_items))
+    except subprocess.TimeoutExpired:
+        return TMUX_QUERY_UNKNOWN
     except Exception:
         return None
 

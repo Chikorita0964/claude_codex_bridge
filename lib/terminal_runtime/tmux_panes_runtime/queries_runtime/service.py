@@ -1,23 +1,60 @@
 from __future__ import annotations
 
+import subprocess
+
 from .options import normalize_expected_user_options, normalize_user_option_names, pane_matches_expected
 
 
+class TmuxQueryUnknown:
+    """A tmux query that never answered because it timed out.
+
+    Local patch (ccb-team-kit): a probe that times out is not an answer of "no". Health assessment
+    read a timed-out probe as pane-missing or pane-foreign - a fact about the pane - and a few of
+    those alarms open the recovery circuit, which blocks the agent's mailbox (2026-09-27..10-01:
+    live panes marked missing under build load, messages held for hours). Callers resolve this
+    sentinel through their own policy; the health monitor keeps the last known health.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        # Unknown is not proof of presence: every legacy truthiness check keeps its old answer.
+        return False
+
+    def __repr__(self) -> str:
+        return 'TMUX_QUERY_UNKNOWN'
+
+
+TMUX_QUERY_UNKNOWN = TmuxQueryUnknown()
+
+
+def is_tmux_query_unknown(value: object) -> bool:
+    return isinstance(value, TmuxQueryUnknown)
+
+
 # Local patch (ccb-team-kit): a probe that times out is asked again with more time before it counts
-# as absence. Under build load a 0.5 s tmux call can time out for a pane that is alive; health
-# assessment reads that as pane-missing, and six in a row open the recovery circuit, which
-# blocks the agent's mailbox (2026-10-01: four live panes, messages held for three hours).
+# as absence, and answers "unknown" only after the last retry. Under build load a 0.5 s tmux call
+# can time out for a pane that is alive; health assessment reads that as pane-missing, and six in a
+# row open the recovery circuit, which blocks the agent's mailbox (2026-10-01: four live panes,
+# messages held for three hours).
 PANE_EXISTS_TIMEOUTS = (0.5, 3.0)
 
+# Local patch (ccb-team-kit): the same retry for the ownership describe. A describe that does not
+# answer is "unknown", never "not owned": one timeout turned every live pane of the project into a
+# foreign pane and started a recovery for each (2026-10-01T06:24Z).
+DESCRIBE_PANE_TIMEOUTS = (0.5, 3.0)
 
-def pane_exists(service, pane_id: str) -> bool:
+
+def pane_exists(service, pane_id: str) -> bool | TmuxQueryUnknown:
     if not service.looks_like_pane_id_fn(pane_id):
         return False
     cp = None
     for timeout in PANE_EXISTS_TIMEOUTS:
         cp = run_tmux_capture(service, ["display-message", "-p", "-t", pane_id, "#{pane_id}"], timeout=timeout)
-        if cp is not None:
+        if not is_tmux_query_unknown(cp):
             break
+    if is_tmux_query_unknown(cp):
+        return TMUX_QUERY_UNKNOWN
     if cp is None:
         return False
     return getattr(cp, "returncode", 1) == 0 and service.pane_exists_output_fn(getattr(cp, "stdout", "") or "")
@@ -53,16 +90,27 @@ def list_panes_by_user_options(service, expected: dict[str, str]) -> list[str]:
     return matching_pane_ids(service, getattr(cp, "stdout", "") or "", normalized)
 
 
-def describe_pane(service, pane_id: str, *, user_options: tuple[str, ...] = ()) -> dict[str, str] | None:
+def describe_pane(
+    service,
+    pane_id: str,
+    *,
+    user_options: tuple[str, ...] = (),
+) -> dict[str, str] | TmuxQueryUnknown | None:
     if not service.looks_like_pane_id_fn(pane_id):
         return None
     normalized_options = normalize_user_option_names(service, user_options)
     format_parts = describe_pane_fields(normalized_options)
-    cp = run_tmux_capture(
-        service,
-        ["display-message", "-p", "-t", pane_id, "\t".join(format_parts)],
-        timeout=0.5,
-    )
+    cp = None
+    for timeout in DESCRIBE_PANE_TIMEOUTS:
+        cp = run_tmux_capture(
+            service,
+            ["display-message", "-p", "-t", pane_id, "\t".join(format_parts)],
+            timeout=timeout,
+        )
+        if not is_tmux_query_unknown(cp):
+            break
+    if is_tmux_query_unknown(cp):
+        return TMUX_QUERY_UNKNOWN
     if cp is None or getattr(cp, "returncode", 1) != 0:
         return None
     return describe_pane_output(getattr(cp, "stdout", "") or "", normalized_options)
@@ -105,6 +153,9 @@ def capture_screen(service, pane_id: str, *, history_lines: int = 0) -> str | No
 def run_tmux_capture(service, args: list[str], *, timeout: float | None = None):
     try:
         return service.tmux_run_fn(args, capture=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Local patch (ccb-team-kit): tmux did not answer, which is not an answer of "no".
+        return TMUX_QUERY_UNKNOWN
     except Exception:
         return None
 
@@ -159,11 +210,14 @@ def describe_pane_output(stdout: str, normalized_options: list[str]) -> dict[str
 
 
 __all__ = [
+    'TMUX_QUERY_UNKNOWN',
+    'TmuxQueryUnknown',
     'describe_pane',
     'find_pane_by_title_marker',
     'get_current_pane_id',
     'get_pane_content',
     'is_pane_alive',
+    'is_tmux_query_unknown',
     'list_panes_by_user_options',
     'pane_exists',
 ]

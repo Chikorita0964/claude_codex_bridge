@@ -13,6 +13,7 @@ from .tmux_panes_runtime.queries import (
     list_panes_by_user_options,
     pane_exists,
 )
+from .tmux_panes_runtime.queries_runtime.service import TmuxQueryUnknown
 
 
 @dataclass
@@ -26,7 +27,7 @@ class TmuxPaneService:
     normalize_user_option_fn: Callable[[str], str]
     strip_ansi_fn: Callable[[str], str]
 
-    def pane_exists(self, pane_id: str) -> bool:
+    def pane_exists(self, pane_id: str) -> bool | TmuxQueryUnknown:
         return pane_exists(self, pane_id)
 
     def get_current_pane_id(self, *, env_pane: str) -> str:
@@ -88,7 +89,12 @@ class TmuxPaneService:
     def list_panes_by_user_options(self, expected: dict[str, str]) -> list[str]:
         return list_panes_by_user_options(self, expected)
 
-    def describe_pane(self, pane_id: str, *, user_options: tuple[str, ...] = ()) -> dict[str, str] | None:
+    def describe_pane(
+        self,
+        pane_id: str,
+        *,
+        user_options: tuple[str, ...] = (),
+    ) -> dict[str, str] | TmuxQueryUnknown | None:
         return describe_pane(self, pane_id, user_options=user_options)
 
     def get_pane_content(self, pane_id: str, *, lines: int = 20) -> str | None:

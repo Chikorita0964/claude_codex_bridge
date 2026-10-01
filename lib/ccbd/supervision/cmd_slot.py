@@ -10,6 +10,7 @@ from ccbd.services.project_namespace_runtime.backend import build_backend, remem
 from ccbd.start_runtime.layout import cmd_bootstrap_command
 from terminal_runtime.placeholders import pane_placeholder_argv
 from terminal_runtime.tmux_identity import apply_ccb_pane_identity
+from terminal_runtime.tmux_panes_runtime.queries_runtime.service import is_tmux_query_unknown
 from terminal_runtime.tmux_readiness import (
     TmuxTransientServerUnavailable,
     is_tmux_transient_server_error_text,
@@ -264,11 +265,14 @@ def _inspect_herdr_cmd_record(ctx: RuntimeSupervisionContext, backend, namespace
     if len(matches) != 1:
         return None
     try:
-        return inspect_project_namespace_pane(backend, matches[0])
+        record = inspect_project_namespace_pane(backend, matches[0])
     except TmuxTransientServerUnavailable:
         raise
     except Exception:
         return None
+    # A probe that timed out is no record (as it was before the unknown distinction), never a
+    # reason to rebuild the cmd slot.
+    return None if is_tmux_query_unknown(record) else record
 
 
 def _inspect_root_record(backend, pane_id: str | None):
@@ -276,11 +280,12 @@ def _inspect_root_record(backend, pane_id: str | None):
     if not pane_text.startswith('%'):
         return None
     try:
-        return inspect_project_namespace_pane(backend, pane_text)
+        record = inspect_project_namespace_pane(backend, pane_text)
     except TmuxTransientServerUnavailable:
         raise
     except Exception:
         return None
+    return None if is_tmux_query_unknown(record) else record
 
 
 def _load_root_pane_id(namespace_controller: ProjectNamespaceController, namespace) -> str | None:

@@ -51,6 +51,9 @@ def health_from_pane_state(pane_state: str) -> str:
         'alive': 'healthy',
         'missing': 'pane-missing',
         'foreign': 'pane-foreign',
+        # Local patch (ccb-team-kit): a probe that did not answer is not a pane that is dead; the
+        # health monitor resolves "unknown" by keeping the last known health.
+        'unknown': 'unknown',
     }.get(pane_state, 'pane-dead')
 
 
@@ -77,12 +80,15 @@ def _tmux_pane_state(*, runtime, session, namespace_state_store) -> str:
     pane_state = tmux_pane_state(session, backend, pane_id)
     if pane_state != 'alive':
         return pane_state
-    if pane_outside_project_namespace(
+    outside = pane_outside_project_namespace(
         runtime=runtime,
         namespace_state_store=namespace_state_store,
         backend=backend,
         pane_id=pane_id,
-    ):
+    )
+    if outside is None:
+        return 'unknown'
+    if outside:
         return 'foreign'
     return pane_state
 
